@@ -1,0 +1,56 @@
+{
+  "name": "codewise-scip",
+  "displayName": "Codewise SCIP",
+  "description": "SCIP-backed navigation through a portable language server.",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "publisher": "codewise",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:csharp",
+    "onCommand:codewise.scip.selectIndex",
+    "onCommand:codewise.scip.restartServer"
+  ],
+  "main": "./dist/extension.cjs",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codewise.scip.selectIndex",
+        "title": "SCIP: Select Index File"
+      },
+      {
+        "command": "codewise.scip.restartServer",
+        "title": "SCIP: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Codewise SCIP",
+      "properties": {
+        "codewise.scip.indexPath": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Absolute path to index.scip. When empty, the server uses .scip/index.scip in the workspace."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "vscode-languageclient": "10.1.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "1.134.0",
+    "esbuild": "0.28.2"
+  }
+}
+
