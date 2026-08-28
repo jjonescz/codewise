@@ -16,15 +16,17 @@
     "build:indexer": "npm run build --workspace @codewise/index-roslyn",
     "build:extension": "npm run build --workspace codewise-scip",
     "build": "npm run build:core && npm run build:lsp && npm run build:indexer && npm run build:extension",
-    "typecheck": "npm run build:core && npm run typecheck --workspace @codewise/scip-lsp && npm run typecheck --workspace @codewise/index-roslyn && npm run typecheck --workspace codewise-scip",
-    "test": "npm run build:core && npm run build:lsp && vitest run",
+    "typecheck": "npm run build:core && npm run build:lsp && npm run typecheck --workspace @codewise/index-roslyn && npm run typecheck --workspace codewise-scip",
+    "test": "npm run build:core && npm run build:lsp && npm run build:extension && vitest run",
     "test:extension": "npm run build && node tools/run-extension-test.mjs",
+    "test:extension:web": "npm run build:core && npm run build:lsp && npm run build:extension && node tools/run-web-extension-test.mjs",
     "index:roslyn": "npm run build:core && npm run build:indexer && node tools/index-roslyn/dist/cli.js",
     "smoke:roslyn": "node tools/smoke-roslyn-lsp.mjs"
   },
   "devDependencies": {
     "@types/node": "26.3.0",
     "@vscode/test-electron": "^3.1.0",
+    "@vscode/test-web": "^0.0.81",
     "typescript": "7.0.2",
     "vitest": "4.1.11",
     "vscode-jsonrpc": "^9.0.1"

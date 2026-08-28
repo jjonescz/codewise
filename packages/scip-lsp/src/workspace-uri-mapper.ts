@@ -34,7 +34,7 @@ export class WorkspaceUriMapper {
       return undefined;
     }
 
-    const prefix = `${this.#rootPath}/`;
+    const prefix = this.#rootPath === "/" ? "/" : `${this.#rootPath}/`;
     if (!document.path.startsWith(prefix)) {
       return undefined;
     }

@@ -10,11 +10,11 @@ const commit = "0f82fdec3c901702ec7fc3f0e9a813330a903ec9";
 const encoder = new TextEncoder();
 
 describe("extractVerifiedRoslynIndex", () => {
-  it("extracts an index whose commit, size, and SHA-256 match the manifest", () => {
+  it("extracts an index whose commit, size, and SHA-256 match the manifest", async () => {
     const index = encoder.encode("valid SCIP bytes");
     const artifact = createArtifact(index, commit);
 
-    const result = extractVerifiedRoslynIndex(artifact, commit);
+    const result = await extractVerifiedRoslynIndex(artifact, commit);
 
     expect(result.index).toEqual(index);
     expect(JSON.parse(new TextDecoder().decode(result.manifest))).toMatchObject({
@@ -24,19 +24,19 @@ describe("extractVerifiedRoslynIndex", () => {
     });
   });
 
-  it("rejects an index produced for a different Roslyn commit", () => {
+  it("rejects an index produced for a different Roslyn commit", async () => {
     const artifact = createArtifact(
       encoder.encode("valid SCIP bytes"),
       "1111111111111111111111111111111111111111"
     );
 
-    expect(() => extractVerifiedRoslynIndex(artifact, commit))
-      .toThrowError(RoslynIndexValidationError);
-    expect(() => extractVerifiedRoslynIndex(artifact, commit))
-      .toThrow(`not ${commit}`);
+    await expect(extractVerifiedRoslynIndex(artifact, commit))
+      .rejects.toThrowError(RoslynIndexValidationError);
+    await expect(extractVerifiedRoslynIndex(artifact, commit))
+      .rejects.toThrow(`not ${commit}`);
   });
 
-  it("rejects an index whose bytes do not match the manifest SHA-256", () => {
+  it("rejects an index whose bytes do not match the manifest SHA-256", async () => {
     const originalIndex = encoder.encode("original SCIP bytes");
     const replacementIndex = encoder.encode("modified SCIP bytes");
     const manifest = createManifest(originalIndex, commit);
@@ -45,8 +45,8 @@ describe("extractVerifiedRoslynIndex", () => {
       "manifest.json": manifest
     }));
 
-    expect(() => extractVerifiedRoslynIndex(artifact, commit))
-      .toThrow("SHA-256 does not match");
+    await expect(extractVerifiedRoslynIndex(artifact, commit))
+      .rejects.toThrow("SHA-256 does not match");
   });
 });
 

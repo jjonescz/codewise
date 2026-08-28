@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
@@ -167,13 +168,14 @@ async function resolveIndexPath(
     return workspaceIndexUri.fsPath;
   }
 
-  const downloadedIndex = await resolveDownloadedRoslynIndex(
+  const downloadedIndexUri = await resolveDownloadedRoslynIndex(
     context,
     workspaceFolder,
-    output
+    output,
+    () => readGitCommit(workspaceFolder.uri.fsPath)
   );
-  if (downloadedIndex !== undefined) {
-    return downloadedIndex;
+  if (downloadedIndexUri !== undefined) {
+    return downloadedIndexUri.fsPath;
   }
 
   await showIndexError(
@@ -212,4 +214,30 @@ async function fileExists(indexUri: vscode.Uri): Promise<boolean> {
     }
     throw error;
   }
+}
+
+function readGitCommit(workspacePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      ["-C", workspacePath, "rev-parse", "--verify", "HEAD"],
+      { encoding: "utf8", windowsHide: true },
+      (error, stdout) => {
+        if (error !== null) {
+          reject(new Error(
+            `Could not determine the Roslyn workspace commit: ${error.message}`,
+            { cause: error }
+          ));
+          return;
+        }
+
+        const commit = stdout.trim().toLowerCase();
+        if (!/^[a-f0-9]{40}$/u.test(commit)) {
+          reject(new Error(`Git returned an invalid Roslyn commit: ${commit}`));
+          return;
+        }
+        resolve(commit);
+      }
+    );
+  });
 }

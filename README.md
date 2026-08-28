@@ -8,11 +8,12 @@ definition, references, and hover over the Language Server Protocol.
 
 - `packages/scip-core`: runtime-neutral SCIP decoding, validation, and queries.
 - `packages/scip-lsp`: standalone TypeScript language server over stdio.
-- `packages/vscode-extension`: desktop VS Code language client.
+- `packages/vscode-extension`: desktop and web VS Code language clients.
 - `tools/index-roslyn`: reproducible local Roslyn indexing and manifest tool.
 
-The shared core and LSP handlers avoid Node and VS Code APIs so a later browser
-client and Web Worker server can reuse them.
+The shared core and LSP handlers avoid Node and VS Code APIs. Desktop VS Code
+runs the server over stdio, while vscode.dev and github.dev run it in a Web
+Worker.
 
 ## Companion indexer repository
 
@@ -97,16 +98,27 @@ Roslyn root workspace makes the extension download the retained
 requires GitHub authentication with repository access. Its manifest is verified
 before the index is cached in extension global storage and used.
 
-## Browser path
+## VS Code for the Web
 
-The current extension is desktop-only because it starts a Node child process
-and reads a local index. Browser support requires three adapters, not a rewrite:
+The extension manifest includes both desktop and browser entry points. In
+vscode.dev and github.dev, the extension reads `.scip/index.scip` through
+`vscode.workspace.fs` and transfers it to a bundled Web Worker language server.
+The **SCIP: Select Index File** command can select another index exposed by the
+virtual workspace.
 
-1. a `vscode-languageclient/browser` client;
-2. a Web Worker entry using `vscode-languageserver/browser`;
-3. an `IndexSource` that obtains bytes through `fetch` or `vscode.workspace.fs`.
+For a Roslyn workspace without a checked-in index, enter the exact 40-character
+workspace commit when prompted. The extension remembers it in workspace state,
+downloads the matching private workflow artifact, verifies it, and caches it in
+web extension storage. You can instead preconfigure
+`codewise.scip.roslynCommit`. github.dev does not expose the active Git commit
+to extensions, so this value cannot be inferred there.
 
-`packages/scip-core`, `packages/scip-lsp/src/server.ts`,
-`packages/scip-lsp/src/index-source.ts`, and URI mapping are shared with that
-future implementation. Node filesystem and stdio code remain isolated in
-`node-file-index-source.ts` and `node.ts`.
+Build and run the headless web integration test with:
+
+```powershell
+npm run test:extension:web
+```
+
+The standalone Node filesystem and stdio adapters remain isolated in
+`packages/scip-lsp/src/node-file-index-source.ts` and
+`packages/scip-lsp/src/node.ts`.

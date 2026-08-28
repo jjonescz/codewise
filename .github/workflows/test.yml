@@ -28,3 +28,6 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Run VS Code web extension test
+        run: npm run test:extension:web

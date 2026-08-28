@@ -21,6 +21,15 @@ describe("WorkspaceUriMapper", () => {
       .toBe("vscode-vfs://github/dotnet/roslyn/src/Widget.cs");
   });
 
+  it("maps documents from an authority-root virtual workspace", () => {
+    const mapper = new WorkspaceUriMapper("vscode-test-web://mount/");
+
+    expect(mapper.toRelativePath("vscode-test-web://mount/src/Widget.cs"))
+      .toBe("src/Widget.cs");
+    expect(mapper.toDocumentUri("src/Widget.cs"))
+      .toBe("vscode-test-web://mount/src/Widget.cs");
+  });
+
   it("rejects sibling paths and different authorities", () => {
     const mapper = new WorkspaceUriMapper("file:///C:/roslyn-3");
 

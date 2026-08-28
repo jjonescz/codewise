@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { gunzipSync, unzipSync } from "fflate";
 
 const bundleFileName = "roslyn-scip.tar.gz";
@@ -17,10 +16,10 @@ export class RoslynIndexValidationError extends Error {
   }
 }
 
-export function extractVerifiedRoslynIndex(
+export async function extractVerifiedRoslynIndex(
   artifact: Uint8Array,
   expectedCommit: string
-): VerifiedRoslynIndex {
+): Promise<VerifiedRoslynIndex> {
   let zipEntries: Record<string, Uint8Array>;
   try {
     zipEntries = unzipSync(artifact, {
@@ -64,15 +63,15 @@ export function extractVerifiedRoslynIndex(
     );
   }
 
-  verifyRoslynIndex(index, manifest, expectedCommit);
+  await verifyRoslynIndex(index, manifest, expectedCommit);
   return { index, manifest };
 }
 
-export function verifyRoslynIndex(
+export async function verifyRoslynIndex(
   index: Uint8Array,
   manifestBytes: Uint8Array,
   expectedCommit: string
-): void {
+): Promise<void> {
   let manifest: unknown;
   try {
     manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes));
@@ -111,7 +110,14 @@ export function verifyRoslynIndex(
     );
   }
 
-  const actualSha256 = createHash("sha256").update(index).digest("hex");
+  const digestInput = index.buffer instanceof ArrayBuffer
+    ? new Uint8Array(index.buffer, index.byteOffset, index.byteLength)
+    : Uint8Array.from(index);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", digestInput);
+  const actualSha256 = Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0")
+  ).join("");
   if (actualSha256 !== expectedSha256) {
     throw new RoslynIndexValidationError(
       "The Roslyn SCIP index SHA-256 does not match its manifest."

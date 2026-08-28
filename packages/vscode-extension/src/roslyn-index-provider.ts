@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import * as vscode from "vscode";
 import { downloadRoslynArtifact } from "./github-artifact.js";
 import {
@@ -18,18 +17,19 @@ const roslynProjectPath = [
 export async function resolveDownloadedRoslynIndex(
   context: vscode.ExtensionContext,
   workspaceFolder: vscode.WorkspaceFolder,
-  output: vscode.OutputChannel
-): Promise<string | undefined> {
+  output: vscode.OutputChannel,
+  resolveCommit: () => Promise<string | undefined>
+): Promise<vscode.Uri | undefined> {
   if (!await isRoslynWorkspace(workspaceFolder)) {
     return undefined;
   }
-  if (workspaceFolder.uri.scheme !== "file") {
-    throw new Error(
-      "Automatic Roslyn SCIP download currently requires a local file workspace."
-    );
-  }
 
-  const commit = await readGitCommit(workspaceFolder.uri.fsPath);
+  const commit = await resolveCommit();
+  if (commit === undefined) {
+    return undefined;
+  }
+  validateCommit(commit);
+
   const cacheDirectory = vscode.Uri.joinPath(
     context.globalStorageUri,
     "roslyn",
@@ -40,7 +40,7 @@ export async function resolveDownloadedRoslynIndex(
 
   if (await isValidCachedIndex(indexUri, manifestUri, commit, output)) {
     output.appendLine(`Using cached Roslyn SCIP index for ${commit}.`);
-    return indexUri.fsPath;
+    return indexUri;
   }
 
   const session = await vscode.authentication.getSession(
@@ -64,7 +64,7 @@ export async function resolveDownloadedRoslynIndex(
       progress.report({ message: "Finding workflow artifact..." });
       const artifact = await downloadRoslynArtifact(commit, session.accessToken);
       progress.report({ message: "Extracting and verifying index..." });
-      return extractVerifiedRoslynIndex(artifact, commit);
+      return await extractVerifiedRoslynIndex(artifact, commit);
     }
   );
 
@@ -79,7 +79,7 @@ export async function resolveDownloadedRoslynIndex(
   void vscode.window.showInformationMessage(
     `Codewise downloaded the Roslyn SCIP index for ${commit.slice(0, 12)}.`
   );
-  return indexUri.fsPath;
+  return indexUri;
 }
 
 async function isRoslynWorkspace(
@@ -118,7 +118,7 @@ async function isValidCachedIndex(
   }
 
   try {
-    verifyRoslynIndex(index, manifest, commit);
+    await verifyRoslynIndex(index, manifest, commit);
     return true;
   } catch (error) {
     if (!(error instanceof RoslynIndexValidationError)) {
@@ -137,7 +137,7 @@ async function writeCacheAtomically(
   manifest: Uint8Array
 ): Promise<void> {
   await vscode.workspace.fs.createDirectory(cacheDirectory);
-  const suffix = `${process.pid}-${Date.now()}`;
+  const suffix = `${Date.now()}-${globalThis.crypto.randomUUID()}`;
   const temporaryIndexUri = vscode.Uri.joinPath(
     cacheDirectory,
     `index.scip.${suffix}.tmp`
@@ -176,32 +176,12 @@ async function deleteTemporaryFile(uri: vscode.Uri): Promise<void> {
   }
 }
 
-function readGitCommit(workspacePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      ["-C", workspacePath, "rev-parse", "--verify", "HEAD"],
-      { encoding: "utf8", windowsHide: true },
-      (error, stdout) => {
-        if (error !== null) {
-          reject(new Error(
-            `Could not determine the Roslyn workspace commit: ${error.message}`,
-            { cause: error }
-          ));
-          return;
-        }
-
-        const commit = stdout.trim().toLowerCase();
-        if (!/^[a-f0-9]{40}$/u.test(commit)) {
-          reject(new Error(`Git returned an invalid Roslyn commit: ${commit}`));
-          return;
-        }
-        resolve(commit);
-      }
-    );
-  });
-}
-
 function isFileNotFound(error: unknown): boolean {
   return error instanceof vscode.FileSystemError && error.code === "FileNotFound";
+}
+
+function validateCommit(commit: string): void {
+  if (!/^[a-f0-9]{40}$/u.test(commit)) {
+    throw new Error(`Invalid Roslyn commit: ${commit}`);
+  }
 }
