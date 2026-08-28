@@ -14,6 +14,22 @@
         "${workspaceFolder}/packages/vscode-extension/dist/**/*.cjs"
       ],
       "preLaunchTask": "build-codewise"
+    },
+    {
+      "name": "Run Codewise SCIP for Web",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npx vscode-test-web --browserType=chromium --extensionDevelopmentPath=\"${workspaceFolder}\\packages\\vscode-extension\" \"${input:webWorkspacePath}\"",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "build-codewise"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "webWorkspacePath",
+      "type": "promptString",
+      "description": "Workspace folder to open in VS Code for the Web",
+      "default": "C:\\roslyn-3"
     }
   ]
 }

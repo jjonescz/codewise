@@ -113,6 +113,11 @@ web extension storage. You can instead preconfigure
 `codewise.scip.roslynCommit`. github.dev does not expose the active Git commit
 to extensions, so this value cannot be inferred there.
 
+Use the **Run Codewise SCIP for Web** launch configuration to build the
+extension and open an interactive local VS Code web workbench. The prompted
+workspace folder should contain `.scip\index.scip`, unless the Roslyn artifact
+download flow will provide it.
+
 Build and run the headless web integration test with:
 
 ```powershell
