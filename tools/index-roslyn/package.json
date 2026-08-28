@@ -1,6 +1,7 @@
 {
   "name": "@codewise/index-roslyn",
   "version": "0.0.1",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "main": "./dist/cli.js",
@@ -15,4 +16,3 @@
     "@codewise/scip-core": "0.0.1"
   }
 }
-

@@ -3,6 +3,7 @@
   "displayName": "Codewise SCIP",
   "description": "SCIP-backed navigation through a portable language server.",
   "version": "0.0.1",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "publisher": "codewise",
