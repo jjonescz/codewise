@@ -6,11 +6,14 @@ import {
   type LanguageClientOptions,
   type ServerOptions
 } from "vscode-languageclient/node";
+import { resolveDownloadedRoslynIndex } from "./roslyn-index-provider.js";
 
 let client: LanguageClient | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const output = vscode.window.createOutputChannel("Codewise SCIP");
   context.subscriptions.push(
+    output,
     vscode.commands.registerCommand("codewise.scip.selectIndex", async () => {
       const selected = await vscode.window.showOpenDialog({
         canSelectFiles: true,
@@ -43,23 +46,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         "codewise.scip",
         workspaceFolder.uri
       ).update("indexPath", indexUri.fsPath, vscode.ConfigurationTarget.Workspace);
-      await restartClient(context);
+      await restartClient(context, output);
     }),
     vscode.commands.registerCommand("codewise.scip.restartServer", async () => {
-      await restartClient(context);
+      await restartClient(context, output);
     })
   );
 
-  await startClient(context);
+  await startClient(context, output);
 }
 
 export async function deactivate(): Promise<void> {
   await stopClient();
 }
 
-async function restartClient(context: vscode.ExtensionContext): Promise<void> {
+async function restartClient(
+  context: vscode.ExtensionContext,
+  output: vscode.OutputChannel
+): Promise<void> {
   await stopClient();
-  await startClient(context);
+  await startClient(context, output);
 }
 
 async function stopClient(): Promise<void> {
@@ -70,7 +76,10 @@ async function stopClient(): Promise<void> {
   }
 }
 
-async function startClient(context: vscode.ExtensionContext): Promise<void> {
+async function startClient(
+  context: vscode.ExtensionContext,
+  output: vscode.OutputChannel
+): Promise<void> {
   const workspaceFolder = getWorkspaceFolder();
   if (workspaceFolder === undefined) {
     return;
@@ -81,16 +90,21 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     workspaceFolder.uri
   ).get<string>("indexPath", "").trim();
 
-  if (!await indexExists(indexPath, workspaceFolder)) {
-    const selected = await vscode.window.showErrorMessage(
-      indexPath === ""
-        ? "No SCIP index was found. Configure codewise.scip.indexPath or add .scip/index.scip to the workspace."
-        : `The configured SCIP index does not exist: ${indexPath}`,
-      "Select Index File"
+  let resolvedIndexPath: string | undefined;
+  try {
+    resolvedIndexPath = await resolveIndexPath(
+      context,
+      workspaceFolder,
+      indexPath,
+      output
     );
-    if (selected === "Select Index File") {
-      await vscode.commands.executeCommand("codewise.scip.selectIndex");
-    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await showIndexError(`Codewise could not obtain a SCIP index: ${message}`);
+    return;
+  }
+
+  if (resolvedIndexPath === undefined) {
     return;
   }
 
@@ -98,7 +112,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   const serverOptions: ServerOptions = {
     module: serverModule,
     transport: TransportKind.stdio,
-    args: indexPath === "" ? [] : ["--index", indexPath]
+    args: ["--index", resolvedIndexPath]
   };
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
@@ -107,7 +121,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
         language: "csharp"
       }
     ],
-    initializationOptions: indexPath === "" ? {} : { indexPath },
+    initializationOptions: { indexPath: resolvedIndexPath },
     workspaceFolder
   };
 
@@ -130,6 +144,54 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   }
 }
 
+async function resolveIndexPath(
+  context: vscode.ExtensionContext,
+  workspaceFolder: vscode.WorkspaceFolder,
+  configuredPath: string,
+  output: vscode.OutputChannel
+): Promise<string | undefined> {
+  if (configuredPath !== "") {
+    if (await fileExists(vscode.Uri.file(configuredPath))) {
+      return configuredPath;
+    }
+    await showIndexError(`The configured SCIP index does not exist: ${configuredPath}`);
+    return undefined;
+  }
+
+  const workspaceIndexUri = vscode.Uri.joinPath(
+    workspaceFolder.uri,
+    ".scip",
+    "index.scip"
+  );
+  if (await fileExists(workspaceIndexUri)) {
+    return workspaceIndexUri.fsPath;
+  }
+
+  const downloadedIndex = await resolveDownloadedRoslynIndex(
+    context,
+    workspaceFolder,
+    output
+  );
+  if (downloadedIndex !== undefined) {
+    return downloadedIndex;
+  }
+
+  await showIndexError(
+    "No SCIP index was found. Configure codewise.scip.indexPath or add .scip/index.scip to the workspace."
+  );
+  return undefined;
+}
+
+async function showIndexError(message: string): Promise<void> {
+  const selected = await vscode.window.showErrorMessage(
+    message,
+    "Select Index File"
+  );
+  if (selected === "Select Index File") {
+    await vscode.commands.executeCommand("codewise.scip.selectIndex");
+  }
+}
+
 function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (workspaceFolder === undefined) {
@@ -140,14 +202,7 @@ function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   return workspaceFolder;
 }
 
-async function indexExists(
-  configuredPath: string,
-  workspaceFolder: vscode.WorkspaceFolder
-): Promise<boolean> {
-  const indexUri = configuredPath === ""
-    ? vscode.Uri.joinPath(workspaceFolder.uri, ".scip", "index.scip")
-    : vscode.Uri.file(configuredPath);
-
+async function fileExists(indexUri: vscode.Uri): Promise<boolean> {
   try {
     const stat = await vscode.workspace.fs.stat(indexUri);
     return (stat.type & vscode.FileType.File) !== 0 && stat.size > 0;
@@ -158,4 +213,3 @@ async function indexExists(
     throw error;
   }
 }
-

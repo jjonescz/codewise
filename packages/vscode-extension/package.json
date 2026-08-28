@@ -36,7 +36,7 @@
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Absolute path to index.scip. When empty, the server uses .scip/index.scip in the workspace."
+          "description": "Absolute path to index.scip. When empty, the extension uses .scip/index.scip or downloads the matching workflow artifact for a Roslyn workspace."
         }
       }
     }
@@ -46,6 +46,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "fflate": "^0.8.2",
     "vscode-languageclient": "10.1.0"
   },
   "devDependencies": {
@@ -53,4 +54,3 @@
     "esbuild": "0.28.2"
   }
 }
-

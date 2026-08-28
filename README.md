@@ -91,6 +91,12 @@ npm run test:extension
 Alternatively, use the **Run Codewise SCIP on Roslyn** launch configuration and
 select the generated index with **SCIP: Select Index File**.
 
+When no index path is configured and `.scip\index.scip` is absent, opening a
+Roslyn root workspace makes the extension download the retained
+`roslyn-scip-<HEAD>` artifact from `jjonescz/indexer`. The private artifact
+requires GitHub authentication with repository access. Its manifest is verified
+before the index is cached in extension global storage and used.
+
 ## Browser path
 
 The current extension is desktop-only because it starts a Node child process
