@@ -14,6 +14,22 @@ definition, references, and hover over the Language Server Protocol.
 The shared core and LSP handlers avoid Node and VS Code APIs so a later browser
 client and Web Worker server can reuse them.
 
+## Companion indexer repository
+
+GitHub-hosted Roslyn indexing lives in the separate private repository
+[`jjonescz/indexer`](https://github.com/jjonescz/indexer). When working on its
+workflows or orchestration, check it out as `indexer` directly under this
+repository root:
+
+```powershell
+gh repo clone jjonescz/indexer indexer
+```
+
+The nested checkout is intentionally ignored by this repository and is not a
+submodule. Treat it as an independent Git repository: inspect, commit, and push
+its changes separately from Codewise. Future agents working on hosted indexing
+should reuse this location, cloning it first when `indexer\.git` is absent.
+
 ## Prerequisites
 
 - Node.js 20 or newer.
