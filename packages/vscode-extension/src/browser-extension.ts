@@ -9,12 +9,17 @@ import {
   indexBootstrapRequestKind,
   type IndexBootstrapRequest
 } from "./browser-protocol.js";
+import {
+  createBrowserWorker,
+  defaultBrowserWorkerDependencies,
+  type ManagedBrowserWorker
+} from "./browser-worker.js";
 import { logError, logMessage } from "./extension-logging.js";
 import { resolveDownloadedRoslynIndex } from "./roslyn-index-provider.js";
 
 interface RunningClient {
   readonly languageClient: LanguageClient;
-  readonly worker: Worker;
+  readonly serverWorker: ManagedBrowserWorker<Worker>;
 }
 
 const commitPattern = /^[a-f0-9]{40}$/u;
@@ -85,7 +90,7 @@ async function stopClient(): Promise<void> {
   try {
     await current.languageClient.stop();
   } finally {
-    current.worker.terminate();
+    current.serverWorker.dispose();
   }
 }
 
@@ -146,14 +151,22 @@ async function startClient(
     "web",
     "server.js"
   );
-  const worker = new Worker(serverUri.toString(true), {
-    name: "Codewise SCIP Language Server"
-  });
+  let serverWorker: ManagedBrowserWorker<Worker> | undefined;
 
   try {
-    await bootstrapWorker(worker, indexBytes, indexUri.toString());
+    serverWorker = await createBrowserWorker(
+      serverUri.toString(true),
+      "Codewise SCIP Language Server",
+      (message) => logMessage(output, message),
+      defaultBrowserWorkerDependencies
+    );
+    await bootstrapWorker(
+      serverWorker.worker,
+      indexBytes,
+      indexUri.toString()
+    );
   } catch (error) {
-    worker.terminate();
+    serverWorker?.dispose();
     const message = error instanceof Error ? error.message : String(error);
     logError(output, "Browser language server startup failed", error);
     await vscode.window.showErrorMessage(
@@ -175,16 +188,16 @@ async function startClient(
   const languageClient = new LanguageClient(
     "codewise-scip",
     "Codewise SCIP",
-    worker,
+    serverWorker.worker,
     clientOptions
   );
-  client = { languageClient, worker };
+  client = { languageClient, serverWorker };
 
   try {
     await languageClient.start();
   } catch (error) {
     client = undefined;
-    worker.terminate();
+    serverWorker.dispose();
     const message = error instanceof Error ? error.message : String(error);
     logError(output, "Language client startup failed", error);
     await vscode.window.showErrorMessage(
