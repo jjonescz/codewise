@@ -4,7 +4,8 @@ export default defineConfig({
   test: {
     include: [
       "packages/**/*.test.ts",
-      "tools/**/*.test.ts"
+      "tools/**/*.test.ts",
+      "tools/**/*.test.mjs"
     ],
     coverage: {
       reporter: [
@@ -14,4 +15,3 @@ export default defineConfig({
     }
   }
 });
-

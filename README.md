@@ -119,6 +119,18 @@ extension and open an interactive local VS Code web workbench. The prompted
 workspace folder should contain `.scip\index.scip`, unless the Roslyn artifact
 download flow will provide it.
 
+Create an unpacked deployment directory for **Developer: Install Extension from
+Location...** with:
+
+```powershell
+npm run package:extension:web
+```
+
+The command writes `artifacts\web-extension\codewise-scip`. Host that directory
+on an HTTPS static server with CORS enabled, then enter its base URL in the
+command. The URL must expose `package.json`, `dist\web\extension.cjs`, and
+`dist\web\server.js` with the generated directory structure intact.
+
 Build and run the headless web integration test with:
 
 ```powershell
