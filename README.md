@@ -131,10 +131,35 @@ without changing its layout.
 
 Hosted vscode.dev and github.dev enforce a fixed `connect-src` Content Security
 Policy, so arbitrary HTTPS origins such as Cloudflare Pages cannot be used with
-this command even when they enable CORS. For local testing, serve the directory
-from `http://localhost:<port>` with CORS enabled and keep that server running
-while the extension is in use. For a persistent installation available to
-other users, publish the package through the VS Code Marketplace.
+this command even when they enable CORS. The supported sideload flow uses HTTPS
+localhost with a locally trusted certificate.
+
+Install [`mkcert`](https://github.com/FiloSottile/mkcert), then create and trust
+a localhost certificate once:
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.certs" | Out-Null
+Push-Location "$HOME\.certs"
+mkcert -install
+mkcert localhost
+Pop-Location
+```
+
+Package and serve the extension:
+
+```powershell
+npm run package:extension:web
+npx serve artifacts\web-extension\codewise-scip `
+  --cors `
+  -l 5000 `
+  --ssl-cert "$HOME\.certs\localhost.pem" `
+  --ssl-key "$HOME\.certs\localhost-key.pem"
+```
+
+Open [vscode.dev](https://vscode.dev), run **Developer: Install Extension From
+Location...**, and enter `https://localhost:5000`. Keep the server running while
+the extension is in use. For a persistent installation available to other
+users, publish the package through the VS Code Marketplace.
 
 Build and run the headless web integration test with:
 
