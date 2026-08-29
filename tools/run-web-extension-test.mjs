@@ -1,4 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { resolve } from "node:path";
 import { runTests } from "@vscode/test-web";
 
@@ -49,11 +50,42 @@ await Promise.all([
   )
 ]);
 
+const port = await findAvailablePort();
 await runTests({
   browserType: "chromium",
   extensionDevelopmentPath,
   extensionTestsPath,
   folderPath: workspacePath,
   headless: true,
+  port,
   quality: "stable"
 });
+
+async function findAvailablePort() {
+  const server = createServer();
+  await new Promise((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    await closeServer(server);
+    throw new Error("Could not determine an available web test port.");
+  }
+
+  await closeServer(server);
+  return address.port;
+}
+
+function closeServer(server) {
+  return new Promise((resolveClose, rejectClose) => {
+    server.close((error) => {
+      if (error === undefined) {
+        resolveClose();
+      } else {
+        rejectClose(error);
+      }
+    });
+  });
+}

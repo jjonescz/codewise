@@ -24,3 +24,8 @@ artifact. You can preconfigure the SHA with `codewise.scip.roslynCommit`.
 When a virtual web workspace inherits a desktop `file` path in
 `codewise.scip.indexPath`, the extension ignores that unavailable path and
 continues with the workspace index and hosted-artifact fallbacks.
+
+Authentication and artifact diagnostics are written to **Output: Codewise
+SCIP** without access tokens or account identifiers. If GitHub sign-in fails,
+also inspect **Output: GitHub Authentication** for the built-in provider's
+per-flow diagnostics.

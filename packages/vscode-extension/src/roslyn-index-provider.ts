@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { formatError, logError, logMessage } from "./extension-logging.js";
 import { downloadRoslynArtifact } from "./github-artifact.js";
 import {
   extractVerifiedRoslynIndex,
@@ -23,12 +24,18 @@ export async function resolveDownloadedRoslynIndex(
   if (!await isRoslynWorkspace(workspaceFolder)) {
     return undefined;
   }
+  logMessage(
+    output,
+    `Detected a compatible Roslyn workspace at ${workspaceFolder.uri.toString()}.`
+  );
 
   const commit = await resolveCommit();
   if (commit === undefined) {
+    logMessage(output, "Roslyn commit selection was cancelled.");
     return undefined;
   }
   validateCommit(commit);
+  logMessage(output, `Resolving SCIP index for Roslyn commit ${commit}.`);
 
   const cacheDirectory = vscode.Uri.joinPath(
     context.globalStorageUri,
@@ -39,18 +46,46 @@ export async function resolveDownloadedRoslynIndex(
   const manifestUri = vscode.Uri.joinPath(cacheDirectory, "manifest.json");
 
   if (await isValidCachedIndex(indexUri, manifestUri, commit, output)) {
-    output.appendLine(`Using cached Roslyn SCIP index for ${commit}.`);
+    logMessage(output, `Using cached Roslyn SCIP index for ${commit}.`);
     return indexUri;
   }
+  logMessage(output, `No valid cached SCIP index was found for ${commit}.`);
 
-  const session = await vscode.authentication.getSession(
-    "github",
-    ["repo"],
-    { createIfNone: true }
-  );
-  if (session === undefined) {
+  const scopes = ["repo"] as const;
+  let session: vscode.AuthenticationSession | undefined;
+  try {
+    logMessage(output, "Checking for an existing GitHub authentication session.");
+    session = await vscode.authentication.getSession("github", scopes, {
+      silent: true
+    });
+    if (session === undefined) {
+      logMessage(
+        output,
+        "No reusable GitHub session is available; starting interactive sign-in."
+      );
+      session = await vscode.authentication.getSession("github", scopes, {
+        createIfNone: {
+          detail:
+            "Codewise needs repository access to download a private SCIP artifact."
+        }
+      });
+    } else {
+      logMessage(output, "Reusing an existing GitHub authentication session.");
+    }
+    logMessage(
+      output,
+      `GitHub authentication succeeded with scopes: ${session.scopes.join(", ")}.`
+    );
+  } catch (error) {
+    logError(output, "GitHub authentication failed", error);
+    logMessage(
+      output,
+      "For authentication flow details, select 'GitHub Authentication' in the Output panel."
+    );
     throw new Error(
-      "GitHub authentication is required to download the private Roslyn SCIP artifact."
+      `GitHub authentication failed: ${formatError(error).split("\n", 1)[0]}. `
+      + "See the Codewise SCIP and GitHub Authentication output channels.",
+      { cause: error }
     );
   }
 
@@ -62,9 +97,15 @@ export async function resolveDownloadedRoslynIndex(
     },
     async (progress) => {
       progress.report({ message: "Finding workflow artifact..." });
-      const artifact = await downloadRoslynArtifact(commit, session.accessToken);
+      const artifact = await downloadRoslynArtifact(
+        commit,
+        session.accessToken,
+        (message) => logMessage(output, message)
+      );
       progress.report({ message: "Extracting and verifying index..." });
-      return await extractVerifiedRoslynIndex(artifact, commit);
+      const verified = await extractVerifiedRoslynIndex(artifact, commit);
+      logMessage(output, "Artifact extraction and manifest verification succeeded.");
+      return verified;
     }
   );
 
@@ -75,7 +116,7 @@ export async function resolveDownloadedRoslynIndex(
     verifiedIndex.index,
     verifiedIndex.manifest
   );
-  output.appendLine(`Downloaded and verified Roslyn SCIP index for ${commit}.`);
+  logMessage(output, `Downloaded and cached Roslyn SCIP index for ${commit}.`);
   void vscode.window.showInformationMessage(
     `Codewise downloaded the Roslyn SCIP index for ${commit.slice(0, 12)}.`
   );
@@ -124,7 +165,10 @@ async function isValidCachedIndex(
     if (!(error instanceof RoslynIndexValidationError)) {
       throw error;
     }
-    output.appendLine(`Ignoring invalid cached Roslyn SCIP index: ${error.message}`);
+    logMessage(
+      output,
+      `Ignoring invalid cached Roslyn SCIP index: ${error.message}`
+    );
     return false;
   }
 }

@@ -3,6 +3,8 @@ const indexerRepository = "indexer";
 const githubApiVersion = "2022-11-28";
 const maximumArtifactBytes = 512 * 1024 * 1024;
 
+export type ArtifactLogger = (message: string) => void;
+
 interface ArtifactList {
   readonly artifacts: readonly Artifact[];
 }
@@ -17,14 +19,26 @@ interface Artifact {
 export async function downloadRoslynArtifact(
   commit: string,
   accessToken: string,
+  logger?: ArtifactLogger,
   fetcher: typeof fetch = fetch
 ): Promise<Uint8Array> {
-  const artifact = await findRoslynArtifact(commit, accessToken, fetcher);
+  const artifactName = `roslyn-scip-${commit}`;
+  logger?.(`Looking up GitHub Actions artifact ${artifactName}.`);
+  const artifact = await findRoslynArtifact(
+    artifactName,
+    accessToken,
+    fetcher,
+    logger
+  );
   if (artifact === undefined) {
     throw new Error(
       `No retained Roslyn SCIP workflow artifact is available for commit ${commit}.`
     );
   }
+  logger?.(
+    `Downloading GitHub Actions artifact ${artifact.id} `
+    + `(created ${artifact.created_at}).`
+  );
 
   const response = await fetcher(
     `https://api.github.com/repos/${indexerOwner}/${indexerRepository}/actions/artifacts/${artifact.id}/zip`,
@@ -33,21 +47,26 @@ export async function downloadRoslynArtifact(
       redirect: "follow"
     }
   );
+  logger?.(
+    `Artifact download returned HTTP ${describeHttpResponse(response)}.`
+  );
   if (!response.ok) {
     throw new Error(
       `GitHub artifact download failed with HTTP ${response.status} ${response.statusText}.`
     );
   }
 
-  return readResponseBytes(response, maximumArtifactBytes);
+  const bytes = await readResponseBytes(response, maximumArtifactBytes);
+  logger?.(`Downloaded ${bytes.byteLength} artifact bytes.`);
+  return bytes;
 }
 
 async function findRoslynArtifact(
-  commit: string,
+  artifactName: string,
   accessToken: string,
-  fetcher: typeof fetch
+  fetcher: typeof fetch,
+  logger?: ArtifactLogger
 ): Promise<Artifact | undefined> {
-  const artifactName = `roslyn-scip-${commit}`;
   const query = new URLSearchParams({
     name: artifactName,
     per_page: "100"
@@ -55,6 +74,9 @@ async function findRoslynArtifact(
   const response = await fetcher(
     `https://api.github.com/repos/${indexerOwner}/${indexerRepository}/actions/artifacts?${query}`,
     { headers: createHeaders(accessToken) }
+  );
+  logger?.(
+    `Artifact lookup returned HTTP ${describeHttpResponse(response)}.`
   );
   if (!response.ok) {
     throw new Error(
@@ -67,9 +89,14 @@ async function findRoslynArtifact(
     throw new Error("GitHub returned an invalid artifact-list response.");
   }
 
-  return payload.artifacts
+  const candidates = payload.artifacts
     .filter((artifact) => artifact.name === artifactName && !artifact.expired)
-    .sort((left, right) => right.created_at.localeCompare(left.created_at))[0];
+    .sort((left, right) => right.created_at.localeCompare(left.created_at));
+  logger?.(
+    `Artifact lookup returned ${payload.artifacts.length} result(s), `
+    + `${candidates.length} retained candidate(s).`
+  );
+  return candidates[0];
 }
 
 function createHeaders(accessToken: string): HeadersInit {
@@ -141,4 +168,10 @@ function isArtifactList(value: unknown): value is ArtifactList {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function describeHttpResponse(response: Response): string {
+  return response.statusText === ""
+    ? String(response.status)
+    : `${response.status} ${response.statusText}`;
 }

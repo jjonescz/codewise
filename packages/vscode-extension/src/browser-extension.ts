@@ -9,6 +9,7 @@ import {
   indexBootstrapRequestKind,
   type IndexBootstrapRequest
 } from "./browser-protocol.js";
+import { logError, logMessage } from "./extension-logging.js";
 import { resolveDownloadedRoslynIndex } from "./roslyn-index-provider.js";
 
 interface RunningClient {
@@ -96,13 +97,23 @@ async function startClient(
   if (workspaceFolder === undefined) {
     return;
   }
+  logMessage(
+    output,
+    `Starting browser extension: appHost=${vscode.env.appHost}, `
+    + `uriScheme=${vscode.env.uriScheme}, remoteName=${vscode.env.remoteName ?? "none"}, `
+    + `workspace=${workspaceFolder.uri.toString()}.`
+  );
 
   let indexUri: vscode.Uri | undefined;
   try {
     indexUri = await resolveIndexUri(context, workspaceFolder, output);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await showIndexError(`Codewise could not obtain a SCIP index: ${message}`);
+    logError(output, "SCIP index resolution failed", error);
+    await showIndexError(
+      `Codewise could not obtain a SCIP index: ${message}`,
+      output
+    );
     return;
   }
   if (indexUri === undefined) {
@@ -114,11 +125,18 @@ async function startClient(
     indexBytes = await vscode.workspace.fs.readFile(indexUri);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await showIndexError(`Codewise could not read ${indexUri.toString()}: ${message}`);
+    logError(output, `Failed to read SCIP index ${indexUri.toString()}`, error);
+    await showIndexError(
+      `Codewise could not read ${indexUri.toString()}: ${message}`,
+      output
+    );
     return;
   }
   if (indexBytes.byteLength === 0) {
-    await showIndexError(`The SCIP index is empty: ${indexUri.toString()}`);
+    await showIndexError(
+      `The SCIP index is empty: ${indexUri.toString()}`,
+      output
+    );
     return;
   }
 
@@ -137,6 +155,7 @@ async function startClient(
   } catch (error) {
     worker.terminate();
     const message = error instanceof Error ? error.message : String(error);
+    logError(output, "Browser language server startup failed", error);
     await vscode.window.showErrorMessage(
       `Codewise SCIP browser server failed to start: ${message}`
     );
@@ -167,6 +186,7 @@ async function startClient(
     client = undefined;
     worker.terminate();
     const message = error instanceof Error ? error.message : String(error);
+    logError(output, "Language client startup failed", error);
     await vscode.window.showErrorMessage(
       `Codewise SCIP language server failed to start: ${message}`
     );
@@ -188,14 +208,16 @@ async function resolveIndexUri(
     const isDesktopPathInVirtualWorkspace = configuredUri.scheme === "file"
       && workspaceFolder.uri.scheme !== "file";
     if (isDesktopPathInVirtualWorkspace) {
-      output.appendLine(
+      logMessage(
+        output,
         `Ignoring desktop SCIP index path in web workspace: ${configuredUri.toString()}`
       );
     } else if (await fileExists(configuredUri)) {
       return configuredUri;
     } else {
       await showIndexError(
-        `The configured SCIP index does not exist: ${configuredUri.toString()}`
+        `The configured SCIP index does not exist: ${configuredUri.toString()}`,
+        output
       );
       return undefined;
     }
@@ -221,7 +243,8 @@ async function resolveIndexUri(
   }
 
   await showIndexError(
-    "No SCIP index was found. Configure codewise.scip.indexPath or add .scip/index.scip to the workspace."
+    "No SCIP index was found. Configure codewise.scip.indexPath or add .scip/index.scip to the workspace.",
+    output
   );
   return undefined;
 }
@@ -338,12 +361,18 @@ function toTransferableArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return copy.buffer;
 }
 
-async function showIndexError(message: string): Promise<void> {
+async function showIndexError(
+  message: string,
+  output: vscode.OutputChannel
+): Promise<void> {
   const selected = await vscode.window.showErrorMessage(
     message,
+    "Show Logs",
     "Select Index File"
   );
-  if (selected === "Select Index File") {
+  if (selected === "Show Logs") {
+    output.show(true);
+  } else if (selected === "Select Index File") {
     await vscode.commands.executeCommand("codewise.scip.selectIndex");
   }
 }

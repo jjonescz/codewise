@@ -7,6 +7,7 @@ import {
   type LanguageClientOptions,
   type ServerOptions
 } from "vscode-languageclient/node";
+import { logError, logMessage } from "./extension-logging.js";
 import { resolveDownloadedRoslynIndex } from "./roslyn-index-provider.js";
 
 let client: LanguageClient | undefined;
@@ -42,6 +43,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (workspaceFolder === undefined) {
         return;
       }
+      logMessage(
+        output,
+        `Starting desktop extension: appHost=${vscode.env.appHost}, `
+        + `uriScheme=${vscode.env.uriScheme}, remoteName=${vscode.env.remoteName ?? "none"}, `
+        + `workspace=${workspaceFolder.uri.toString()}.`
+      );
 
       await vscode.workspace.getConfiguration(
         "codewise.scip",
@@ -101,7 +108,11 @@ async function startClient(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await showIndexError(`Codewise could not obtain a SCIP index: ${message}`);
+    logError(output, "SCIP index resolution failed", error);
+    await showIndexError(
+      `Codewise could not obtain a SCIP index: ${message}`,
+      output
+    );
     return;
   }
 
@@ -139,6 +150,7 @@ async function startClient(
   } catch (error) {
     client = undefined;
     const message = error instanceof Error ? error.message : String(error);
+    logError(output, "Language server startup failed", error);
     await vscode.window.showErrorMessage(
       `Codewise SCIP language server failed to start: ${message}`
     );
@@ -155,7 +167,10 @@ async function resolveIndexPath(
     if (await fileExists(vscode.Uri.file(configuredPath))) {
       return configuredPath;
     }
-    await showIndexError(`The configured SCIP index does not exist: ${configuredPath}`);
+    await showIndexError(
+      `The configured SCIP index does not exist: ${configuredPath}`,
+      output
+    );
     return undefined;
   }
 
@@ -179,17 +194,24 @@ async function resolveIndexPath(
   }
 
   await showIndexError(
-    "No SCIP index was found. Configure codewise.scip.indexPath or add .scip/index.scip to the workspace."
+    "No SCIP index was found. Configure codewise.scip.indexPath or add .scip/index.scip to the workspace.",
+    output
   );
   return undefined;
 }
 
-async function showIndexError(message: string): Promise<void> {
+async function showIndexError(
+  message: string,
+  output: vscode.OutputChannel
+): Promise<void> {
   const selected = await vscode.window.showErrorMessage(
     message,
+    "Show Logs",
     "Select Index File"
   );
-  if (selected === "Select Index File") {
+  if (selected === "Show Logs") {
+    output.show(true);
+  } else if (selected === "Select Index File") {
     await vscode.commands.executeCommand("codewise.scip.selectIndex");
   }
 }
