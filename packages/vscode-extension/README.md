@@ -11,10 +11,11 @@ Select Index File** and **SCIP: Restart Language Server** from the Command
 Palette.
 
 When the setting is empty and the root workspace is a `dotnet/roslyn` checkout,
-the extension looks up `roslyn-scip-<HEAD>` in the private
-`jjonescz/indexer` GitHub Actions artifacts. It asks for GitHub `repo`
-authentication, verifies the bundle's commit, byte size, and SHA-256 from its
-manifest, and caches the index by commit in the extension's global storage.
+the extension looks up `roslyn-scip-<HEAD>` in the `jjonescz/indexer` GitHub
+Actions artifacts. It tries anonymous access first, then asks for GitHub `repo`
+authentication only when private or rate-limited access requires it. The
+extension verifies the bundle's commit, byte size, and SHA-256 from its manifest
+and caches the index by commit in extension global storage.
 
 Desktop VS Code obtains the Roslyn commit from local Git. github.dev does not
 expose the active Git commit to web extensions, so the extension asks for its

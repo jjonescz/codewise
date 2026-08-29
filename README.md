@@ -94,9 +94,10 @@ select the generated index with **SCIP: Select Index File**.
 
 When no index path is configured and `.scip\index.scip` is absent, opening a
 Roslyn root workspace makes the extension download the retained
-`roslyn-scip-<HEAD>` artifact from `jjonescz/indexer`. The private artifact
-requires GitHub authentication with repository access. Its manifest is verified
-before the index is cached in extension global storage and used.
+`roslyn-scip-<HEAD>` artifact from `jjonescz/indexer`. The extension tries
+anonymous access first and requests GitHub authentication only when private or
+rate-limited access requires it. The artifact manifest is verified before the
+index is cached in extension global storage and used.
 
 ## VS Code for the Web
 
@@ -108,8 +109,8 @@ virtual workspace.
 
 For a Roslyn workspace without a checked-in index, enter the exact 40-character
 workspace commit when prompted. The extension remembers it in workspace state,
-downloads the matching private workflow artifact, verifies it, and caches it in
-web extension storage. You can instead preconfigure
+downloads the matching workflow artifact, verifies it, and caches it in web
+extension storage. You can instead preconfigure
 `codewise.scip.roslynCommit`. github.dev does not expose the active Git commit
 to extensions, so this value cannot be inferred there.
 

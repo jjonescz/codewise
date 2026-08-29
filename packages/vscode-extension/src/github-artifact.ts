@@ -4,6 +4,28 @@ const githubApiVersion = "2022-11-28";
 const maximumArtifactBytes = 512 * 1024 * 1024;
 
 export type ArtifactLogger = (message: string) => void;
+export type ArtifactOperation = "lookup" | "download";
+
+export class GitHubArtifactHttpError extends Error {
+  public readonly operation: ArtifactOperation;
+  public readonly status: number;
+
+  public constructor(
+    operation: ArtifactOperation,
+    status: number,
+    statusText: string
+  ) {
+    const operationDescription = operation === "lookup"
+      ? "artifact lookup"
+      : "artifact download";
+    super(
+      `GitHub ${operationDescription} failed with HTTP ${status} ${statusText}.`
+    );
+    this.name = "GitHubArtifactHttpError";
+    this.operation = operation;
+    this.status = status;
+  }
+}
 
 interface ArtifactList {
   readonly artifacts: readonly Artifact[];
@@ -18,7 +40,7 @@ interface Artifact {
 
 export async function downloadRoslynArtifact(
   commit: string,
-  accessToken: string,
+  accessToken: string | undefined,
   logger?: ArtifactLogger,
   fetcher: typeof fetch = fetch
 ): Promise<Uint8Array> {
@@ -51,8 +73,10 @@ export async function downloadRoslynArtifact(
     `Artifact download returned HTTP ${describeHttpResponse(response)}.`
   );
   if (!response.ok) {
-    throw new Error(
-      `GitHub artifact download failed with HTTP ${response.status} ${response.statusText}.`
+    throw new GitHubArtifactHttpError(
+      "download",
+      response.status,
+      response.statusText
     );
   }
 
@@ -63,7 +87,7 @@ export async function downloadRoslynArtifact(
 
 async function findRoslynArtifact(
   artifactName: string,
-  accessToken: string,
+  accessToken: string | undefined,
   fetcher: typeof fetch,
   logger?: ArtifactLogger
 ): Promise<Artifact | undefined> {
@@ -79,8 +103,10 @@ async function findRoslynArtifact(
     `Artifact lookup returned HTTP ${describeHttpResponse(response)}.`
   );
   if (!response.ok) {
-    throw new Error(
-      `GitHub artifact lookup failed with HTTP ${response.status} ${response.statusText}.`
+    throw new GitHubArtifactHttpError(
+      "lookup",
+      response.status,
+      response.statusText
     );
   }
 
@@ -99,12 +125,15 @@ async function findRoslynArtifact(
   return candidates[0];
 }
 
-function createHeaders(accessToken: string): HeadersInit {
-  return {
+function createHeaders(accessToken: string | undefined): HeadersInit {
+  const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
-    Authorization: `Bearer ${accessToken}`,
     "X-GitHub-Api-Version": githubApiVersion
   };
+  if (accessToken !== undefined) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+  return headers;
 }
 
 async function readResponseBytes(
@@ -174,4 +203,15 @@ function describeHttpResponse(response: Response): string {
   return response.statusText === ""
     ? String(response.status)
     : `${response.status} ${response.statusText}`;
+}
+
+export function shouldRetryArtifactRequestWithAuthentication(
+  error: unknown
+): boolean {
+  return error instanceof GitHubArtifactHttpError
+    && (
+      error.status === 401
+      || error.status === 403
+      || (error.operation === "lookup" && error.status === 404)
+    );
 }

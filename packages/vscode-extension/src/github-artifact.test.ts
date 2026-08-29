@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { downloadRoslynArtifact } from "./github-artifact.js";
+import {
+  downloadRoslynArtifact,
+  GitHubArtifactHttpError,
+  shouldRetryArtifactRequestWithAuthentication
+} from "./github-artifact.js";
 
 const commit = "0f82fdec3c901702ec7fc3f0e9a813330a903ec9";
 
@@ -50,5 +54,50 @@ describe("downloadRoslynArtifact", () => {
       "Downloaded 3 artifact bytes."
     ]);
     expect(logs.join("\n")).not.toContain(accessToken);
+  });
+
+  it("omits authorization when accessing a public artifact anonymously", async () => {
+    const authorizationHeaders: Array<string | null> = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      authorizationHeaders.push(
+        new Headers(init?.headers).get("Authorization")
+      );
+      const url = String(input);
+      if (url.includes("/actions/artifacts?")) {
+        return Response.json({
+          artifacts: [
+            {
+              id: 42,
+              name: `roslyn-scip-${commit}`,
+              expired: false,
+              created_at: "2026-08-29T08:00:00Z"
+            }
+          ]
+        });
+      }
+      return new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        statusText: "OK"
+      });
+    };
+
+    await downloadRoslynArtifact(commit, undefined, undefined, fetcher);
+
+    expect(authorizationHeaders).toEqual([null, null]);
+  });
+
+  it("retries authentication only for access-related HTTP failures", () => {
+    expect(shouldRetryArtifactRequestWithAuthentication(
+      new GitHubArtifactHttpError("lookup", 404, "Not Found")
+    )).toBe(true);
+    expect(shouldRetryArtifactRequestWithAuthentication(
+      new GitHubArtifactHttpError("download", 403, "Forbidden")
+    )).toBe(true);
+    expect(shouldRetryArtifactRequestWithAuthentication(
+      new GitHubArtifactHttpError("download", 404, "Not Found")
+    )).toBe(false);
+    expect(shouldRetryArtifactRequestWithAuthentication(
+      new Error("Invalid response")
+    )).toBe(false);
   });
 });
