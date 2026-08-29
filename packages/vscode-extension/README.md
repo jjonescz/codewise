@@ -20,3 +20,7 @@ Desktop VS Code obtains the Roslyn commit from local Git. github.dev does not
 expose the active Git commit to web extensions, so the extension asks for its
 full SHA and remembers it in workspace state before downloading the matching
 artifact. You can preconfigure the SHA with `codewise.scip.roslynCommit`.
+
+When a virtual web workspace inherits a desktop `file` path in
+`codewise.scip.indexPath`, the extension ignores that unavailable path and
+continues with the workspace index and hosted-artifact fallbacks.

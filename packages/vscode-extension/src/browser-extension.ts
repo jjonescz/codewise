@@ -185,13 +185,20 @@ async function resolveIndexUri(
   const configuredPath = configuration.get<string>("indexPath", "").trim();
   if (configuredPath !== "") {
     const configuredUri = parseConfiguredIndexUri(configuredPath);
-    if (await fileExists(configuredUri)) {
+    const isDesktopPathInVirtualWorkspace = configuredUri.scheme === "file"
+      && workspaceFolder.uri.scheme !== "file";
+    if (isDesktopPathInVirtualWorkspace) {
+      output.appendLine(
+        `Ignoring desktop SCIP index path in web workspace: ${configuredUri.toString()}`
+      );
+    } else if (await fileExists(configuredUri)) {
       return configuredUri;
+    } else {
+      await showIndexError(
+        `The configured SCIP index does not exist: ${configuredUri.toString()}`
+      );
+      return undefined;
     }
-    await showIndexError(
-      `The configured SCIP index does not exist: ${configuredUri.toString()}`
-    );
-    return undefined;
   }
 
   const workspaceIndexUri = vscode.Uri.joinPath(

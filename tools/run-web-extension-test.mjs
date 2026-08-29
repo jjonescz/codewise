@@ -33,12 +33,20 @@ const workspacePath = resolve(
 
 await mkdir(resolve(workspacePath, ".scip"), { recursive: true });
 await mkdir(resolve(workspacePath, "src"), { recursive: true });
+await mkdir(resolve(workspacePath, ".vscode"), { recursive: true });
 await Promise.all([
   writeFile(
     resolve(workspacePath, ".scip", "index.scip"),
     Buffer.from(fixtureIndexBase64, "base64")
   ),
-  writeFile(resolve(workspacePath, "src", "Widget.cs"), fixtureSource, "utf8")
+  writeFile(resolve(workspacePath, "src", "Widget.cs"), fixtureSource, "utf8"),
+  writeFile(
+    resolve(workspacePath, ".vscode", "settings.json"),
+    `${JSON.stringify({
+      "codewise.scip.indexPath": "C:\\missing-desktop-index\\index.scip"
+    }, undefined, 2)}\n`,
+    "utf8"
+  )
 ]);
 
 await runTests({
