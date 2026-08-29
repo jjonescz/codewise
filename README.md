@@ -127,9 +127,14 @@ npm run package:extension:web
 ```
 
 The command writes `artifacts\web-extension\codewise-scip`. Host that directory
-on an HTTPS static server with CORS enabled, then enter its base URL in the
-command. The URL must expose `package.json`, `dist\web\extension.cjs`, and
-`dist\web\server.js` with the generated directory structure intact.
+without changing its layout.
+
+Hosted vscode.dev and github.dev enforce a fixed `connect-src` Content Security
+Policy, so arbitrary HTTPS origins such as Cloudflare Pages cannot be used with
+this command even when they enable CORS. For local testing, serve the directory
+from `http://localhost:<port>` with CORS enabled and keep that server running
+while the extension is in use. For a persistent installation available to
+other users, publish the package through the VS Code Marketplace.
 
 Build and run the headless web integration test with:
 

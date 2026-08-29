@@ -46,7 +46,7 @@ describe("packageWebExtension", () => {
     expect(files).toEqual([
       "LICENSE",
       "README.md",
-      "dist/web/extension.cjs",
+      "dist/web/extension.js",
       "dist/web/server.js",
       "package.json"
     ]);
@@ -54,10 +54,11 @@ describe("packageWebExtension", () => {
     const manifest = JSON.parse(
       await readFile(resolve(outputDirectory, "package.json"), "utf8")
     );
-    expect(manifest.browser).toBe("./dist/web/extension.cjs");
+    expect(manifest.browser).toBe("./dist/web/extension.js");
     expect(manifest.main).toBeUndefined();
     expect(manifest.private).toBeUndefined();
     expect(manifest.scripts).toBeUndefined();
+    expect(manifest.type).toBeUndefined();
     expect(manifest.devDependencies).toBeUndefined();
   });
 });

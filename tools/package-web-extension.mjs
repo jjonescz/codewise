@@ -20,6 +20,7 @@ const defaultOutputDirectory = resolve(
   "web-extension",
   "codewise-scip"
 );
+const hostedBrowserEntry = "./dist/web/extension.js";
 
 export async function packageWebExtension({
   extensionDirectory = defaultExtensionDirectory,
@@ -37,12 +38,14 @@ export async function packageWebExtension({
     main: _main,
     private: _private,
     scripts: _scripts,
+    type: _type,
     ...webManifest
   } = manifest;
+  webManifest.browser = hostedBrowserEntry;
   const filesToCopy = [
     ["README.md", "README.md"],
     ["LICENSE", "LICENSE"],
-    [manifest.browser, manifest.browser],
+    [manifest.browser, hostedBrowserEntry],
     ["dist/web/server.js", "dist/web/server.js"]
   ];
 
