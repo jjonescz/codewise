@@ -9,7 +9,34 @@
         "$tsc"
       ],
       "group": "build"
+    },
+    {
+      "label": "package-codewise-for-vscode-dev",
+      "type": "npm",
+      "script": "package:extension:web",
+      "problemMatcher": [
+        "$tsc"
+      ]
+    },
+    {
+      "label": "serve-codewise-for-vscode-dev",
+      "type": "shell",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "serve",
+        "artifacts\\web-extension\\codewise",
+        "--cors",
+        "-l",
+        "5000",
+        "--ssl-cert",
+        "${env:USERPROFILE}\\.certs\\localhost.pem",
+        "--ssl-key",
+        "${env:USERPROFILE}\\.certs\\localhost-key.pem"
+      ],
+      "dependsOn": "package-codewise-for-vscode-dev",
+      "dependsOrder": "sequence",
+      "problemMatcher": []
     }
   ]
 }
-

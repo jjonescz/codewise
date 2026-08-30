@@ -156,6 +156,10 @@ npx serve artifacts\web-extension\codewise `
   --ssl-key "$HOME\.certs\localhost-key.pem"
 ```
 
+Alternatively, run the `serve-codewise-for-vscode-dev` VS Code task after the
+one-time certificate setup. The task packages the extension and serves it at
+`https://localhost:5000`; terminate the task when testing is complete.
+
 Open [vscode.dev](https://vscode.dev), run **Developer: Install Extension From
 Location...**, and enter `https://localhost:5000`. Keep the server running while
 the extension is in use. For a persistent installation available to other
