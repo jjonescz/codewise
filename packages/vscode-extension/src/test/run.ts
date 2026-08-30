@@ -5,7 +5,7 @@ const roslynRoot = process.env["ROSLYN_ROOT"] ?? "C:\\roslyn-3";
 
 export async function run(): Promise<void> {
   const matchingExtensions = vscode.extensions.all.filter(
-    (candidate) => candidate.packageJSON["name"] === "codewise"
+    (candidate) => candidate.packageJSON["name"] === "codewise-lsp"
   );
   const extension = matchingExtensions[0];
   assert(

@@ -1,5 +1,5 @@
 {
-  "name": "codewise",
+  "name": "codewise-lsp",
   "displayName": "Codewise",
   "description": "Precomputed code intelligence and navigation for VS Code.",
   "version": "0.0.1",

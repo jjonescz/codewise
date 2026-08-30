@@ -5,7 +5,7 @@ export async function run(): Promise<void> {
   assert(workspaceFolder !== undefined, "The web extension test workspace was not opened.");
 
   const matchingExtensions = vscode.extensions.all.filter(
-    (candidate) => candidate.packageJSON["name"] === "codewise"
+    (candidate) => candidate.packageJSON["name"] === "codewise-lsp"
   );
   const extension = matchingExtensions[0];
   assert(
