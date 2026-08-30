@@ -58,7 +58,7 @@
           "scope": "resource",
           "pattern": "^[a-fA-F0-9]{40}$|^$",
           "patternErrorMessage": "Enter a full 40-character Git commit SHA or leave the setting empty.",
-          "description": "Exact Roslyn commit whose hosted index artifact should be used in VS Code for the Web. The desktop extension determines this with Git."
+          "description": "Exact Roslyn commit whose hosted index artifact should be used. When empty, the desktop extension uses Git and VS Code for the Web uses Remote Repositories metadata."
         }
       }
     }

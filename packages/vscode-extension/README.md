@@ -17,10 +17,11 @@ authentication only when private or rate-limited access requires it. The
 extension verifies the bundle's commit, byte size, and SHA-256 from its manifest
 and caches the index by commit in extension global storage.
 
-Desktop VS Code obtains the Roslyn commit from local Git. github.dev does not
-expose the active Git commit to web extensions, so the extension asks for its
-full SHA and remembers it in workspace state before downloading the matching
-artifact. You can preconfigure the SHA with `codewise.roslynCommit`.
+Desktop VS Code obtains the Roslyn commit from local Git. On vscode.dev and
+github.dev, the extension obtains the exact revision from the built-in Remote
+Repositories metadata API. If that metadata is unavailable, it falls back to a
+previously entered SHA or asks for the full SHA and remembers it in workspace
+state. You can override automatic detection with `codewise.roslynCommit`.
 
 When a virtual web workspace inherits a desktop `file` path in
 `codewise.indexPath`, the extension ignores that unavailable path and
