@@ -1,5 +1,5 @@
 {
-  "name": "codewise",
+  "name": "codewise-monorepo",
   "version": "0.0.1",
   "license": "MIT",
   "private": true,
@@ -15,9 +15,9 @@
     "build:core": "npm run build --workspace @codewise/scip-core",
     "build:lsp": "npm run build --workspace @codewise/scip-lsp",
     "build:indexer": "npm run build --workspace @codewise/index-roslyn",
-    "build:extension": "npm run build --workspace codewise-scip",
+    "build:extension": "npm run build --workspace codewise",
     "build": "npm run build:core && npm run build:lsp && npm run build:indexer && npm run build:extension",
-    "typecheck": "npm run build:core && npm run build:lsp && npm run typecheck --workspace @codewise/index-roslyn && npm run typecheck --workspace codewise-scip",
+    "typecheck": "npm run build:core && npm run build:lsp && npm run typecheck --workspace @codewise/index-roslyn && npm run typecheck --workspace codewise",
     "test": "npm run build:core && npm run build:lsp && npm run build:extension && vitest run",
     "test:extension": "npm run build && node tools/run-extension-test.mjs",
     "test:extension:web": "npm run build:core && npm run build:lsp && npm run build:extension && node tools/run-web-extension-test.mjs",

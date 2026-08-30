@@ -1,7 +1,7 @@
 {
-  "name": "codewise-scip",
-  "displayName": "Codewise SCIP",
-  "description": "SCIP-backed navigation through a portable language server.",
+  "name": "codewise",
+  "displayName": "Codewise",
+  "description": "Precomputed code intelligence and navigation for VS Code.",
   "version": "0.0.1",
   "license": "MIT",
   "private": true,
@@ -27,38 +27,38 @@
   ],
   "activationEvents": [
     "onLanguage:csharp",
-    "onCommand:codewise.scip.selectIndex",
-    "onCommand:codewise.scip.restartServer"
+    "onCommand:codewise.selectIndex",
+    "onCommand:codewise.restartServer"
   ],
   "main": "./dist/extension.cjs",
   "browser": "./dist/web/extension.cjs",
   "contributes": {
     "commands": [
       {
-        "command": "codewise.scip.selectIndex",
-        "title": "SCIP: Select Index File"
+        "command": "codewise.selectIndex",
+        "title": "Codewise: Select Index File"
       },
       {
-        "command": "codewise.scip.restartServer",
-        "title": "SCIP: Restart Language Server"
+        "command": "codewise.restartServer",
+        "title": "Codewise: Restart Language Server"
       }
     ],
     "configuration": {
-      "title": "Codewise SCIP",
+      "title": "Codewise",
       "properties": {
-        "codewise.scip.indexPath": {
+        "codewise.indexPath": {
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Absolute path or workspace URI to index.scip. When empty, the extension uses .scip/index.scip or downloads the matching workflow artifact for a Roslyn workspace."
+          "description": "Absolute path or workspace URI to the code intelligence index. When empty, Codewise uses .scip/index.scip or downloads the matching workflow artifact for a Roslyn workspace."
         },
-        "codewise.scip.roslynCommit": {
+        "codewise.roslynCommit": {
           "type": "string",
           "default": "",
           "scope": "resource",
           "pattern": "^[a-fA-F0-9]{40}$|^$",
           "patternErrorMessage": "Enter a full 40-character Git commit SHA or leave the setting empty.",
-          "description": "Exact Roslyn commit whose hosted SCIP artifact should be used in VS Code for the Web. The desktop extension determines this with Git."
+          "description": "Exact Roslyn commit whose hosted index artifact should be used in VS Code for the Web. The desktop extension determines this with Git."
         }
       }
     }

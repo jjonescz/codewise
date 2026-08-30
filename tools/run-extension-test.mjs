@@ -24,7 +24,7 @@ await writeFile(workspacePath, `${JSON.stringify({
     }
   ],
   settings: {
-    "codewise.scip.indexPath": indexPath
+    "codewise.indexPath": indexPath
   }
 }, undefined, 2)}\n`, "utf8");
 

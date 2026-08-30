@@ -13,10 +13,10 @@ import { resolveDownloadedRoslynIndex } from "./roslyn-index-provider.js";
 let client: LanguageClient | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const output = vscode.window.createOutputChannel("Codewise SCIP");
+  const output = vscode.window.createOutputChannel("Codewise");
   context.subscriptions.push(
     output,
-    vscode.commands.registerCommand("codewise.scip.selectIndex", async () => {
+    vscode.commands.registerCommand("codewise.selectIndex", async () => {
       const selected = await vscode.window.showOpenDialog({
         canSelectFiles: true,
         canSelectFolders: false,
@@ -51,12 +51,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
 
       await vscode.workspace.getConfiguration(
-        "codewise.scip",
+        "codewise",
         workspaceFolder.uri
       ).update("indexPath", indexUri.fsPath, vscode.ConfigurationTarget.Workspace);
       await restartClient(context, output);
     }),
-    vscode.commands.registerCommand("codewise.scip.restartServer", async () => {
+    vscode.commands.registerCommand("codewise.restartServer", async () => {
       await restartClient(context, output);
     })
   );
@@ -93,10 +93,7 @@ async function startClient(
     return;
   }
 
-  const indexPath = vscode.workspace.getConfiguration(
-    "codewise.scip",
-    workspaceFolder.uri
-  ).get<string>("indexPath", "").trim();
+  const indexPath = getConfiguredValue("indexPath", workspaceFolder.uri);
 
   let resolvedIndexPath: string | undefined;
   try {
@@ -138,8 +135,8 @@ async function startClient(
   };
 
   const candidate = new LanguageClient(
-    "codewise-scip",
-    "Codewise SCIP",
+    "codewise",
+    "Codewise",
     serverOptions,
     clientOptions
   );
@@ -152,7 +149,7 @@ async function startClient(
     const message = error instanceof Error ? error.message : String(error);
     logError(output, "Language server startup failed", error);
     await vscode.window.showErrorMessage(
-      `Codewise SCIP language server failed to start: ${message}`
+      `Codewise language server failed to start: ${message}`
     );
   }
 }
@@ -194,7 +191,7 @@ async function resolveIndexPath(
   }
 
   await showIndexError(
-    "No SCIP index was found. Configure codewise.scip.indexPath or add .scip/index.scip to the workspace.",
+    "No code intelligence index was found. Configure codewise.indexPath or add .scip/index.scip to the workspace.",
     output
   );
   return undefined;
@@ -212,7 +209,7 @@ async function showIndexError(
   if (selected === "Show Logs") {
     output.show(true);
   } else if (selected === "Select Index File") {
-    await vscode.commands.executeCommand("codewise.scip.selectIndex");
+    await vscode.commands.executeCommand("codewise.selectIndex");
   }
 }
 
@@ -220,10 +217,24 @@ function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (workspaceFolder === undefined) {
     void vscode.window.showErrorMessage(
-      "Codewise SCIP requires an open workspace folder."
+      "Codewise requires an open workspace folder."
     );
   }
   return workspaceFolder;
+}
+
+function getConfiguredValue(
+  key: "indexPath",
+  scope: vscode.Uri
+): string {
+  const configured = vscode.workspace.getConfiguration("codewise", scope)
+    .get<string>(key, "")
+    .trim();
+  return configured !== ""
+    ? configured
+    : vscode.workspace.getConfiguration("codewise.scip", scope)
+      .get<string>(key, "")
+      .trim();
 }
 
 async function fileExists(indexUri: vscode.Uri): Promise<boolean> {

@@ -25,7 +25,7 @@ describe("packageWebExtension", () => {
       resolve(tmpdir(), "codewise-web-extension-")
     );
     temporaryDirectories.push(temporaryDirectory);
-    const outputDirectory = resolve(temporaryDirectory, "codewise-scip");
+    const outputDirectory = resolve(temporaryDirectory, "codewise");
 
     await packageWebExtension({
       outputDirectory,

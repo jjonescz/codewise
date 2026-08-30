@@ -4,8 +4,16 @@ import * as vscode from "vscode";
 const roslynRoot = process.env["ROSLYN_ROOT"] ?? "C:\\roslyn-3";
 
 export async function run(): Promise<void> {
-  const extension = vscode.extensions.getExtension("codewise.codewise-scip");
-  assert(extension !== undefined, "Codewise SCIP extension was not discovered.");
+  const matchingExtensions = vscode.extensions.all.filter(
+    (candidate) => candidate.packageJSON["name"] === "codewise"
+  );
+  const extension = matchingExtensions[0];
+  assert(
+    matchingExtensions.length === 1 && extension !== undefined,
+    `Expected one Codewise extension; found: ${
+      matchingExtensions.map((candidate) => candidate.id).join(", ") || "none"
+    }.`
+  );
   await extension.activate();
 
   const sourceUri = vscode.Uri.file(
@@ -64,4 +72,3 @@ export async function run(): Promise<void> {
     hoverCount: hovers.length
   }));
 }
-

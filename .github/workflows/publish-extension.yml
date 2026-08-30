@@ -49,7 +49,7 @@ jobs:
           fi
           extension_version="${GITHUB_REF_NAME#v}"
           npm version "$extension_version" \
-            --workspace codewise-scip \
+            --workspace codewise \
             --no-git-tag-version \
             --allow-same-version
           manifest_version="$(
@@ -90,13 +90,13 @@ jobs:
           pushd packages/vscode-extension
           npm exec -- vsce package \
             --no-dependencies \
-            --out "../../artifacts/extension-package/codewise-scip-${EXTENSION_VERSION}.vsix"
+            --out "../../artifacts/extension-package/codewise-${EXTENSION_VERSION}.vsix"
           popd
 
       - name: Upload extension package
         uses: actions/upload-artifact@v4
         with:
-          name: codewise-scip-${{ steps.version.outputs.extension-version }}
+          name: codewise-${{ steps.version.outputs.extension-version }}
           path: artifacts/extension-package/*.vsix
           if-no-files-found: error
           retention-days: 30
@@ -127,7 +127,7 @@ jobs:
       - name: Download extension package
         uses: actions/download-artifact@v4
         with:
-          name: codewise-scip-${{ needs.build.outputs.extension-version }}
+          name: codewise-${{ needs.build.outputs.extension-version }}
           path: artifacts/extension-package
 
       - name: Publish extension
@@ -142,4 +142,4 @@ jobs:
             exit 1
           fi
           npm exec -- vsce publish \
-            --packagePath "artifacts/extension-package/codewise-scip-${EXTENSION_VERSION}.vsix"
+            --packagePath "artifacts/extension-package/codewise-${EXTENSION_VERSION}.vsix"

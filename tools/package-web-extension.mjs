@@ -18,7 +18,7 @@ const defaultOutputDirectory = resolve(
   repositoryRoot,
   "artifacts",
   "web-extension",
-  "codewise-scip"
+  "codewise"
 );
 const hostedBrowserEntry = "./dist/web/extension.js";
 

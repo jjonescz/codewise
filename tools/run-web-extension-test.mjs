@@ -44,7 +44,7 @@ await Promise.all([
   writeFile(
     resolve(workspacePath, ".vscode", "settings.json"),
     `${JSON.stringify({
-      "codewise.scip.indexPath": "C:\\missing-desktop-index\\index.scip"
+      "codewise.indexPath": "C:\\missing-desktop-index\\index.scip"
     }, undefined, 2)}\n`,
     "utf8"
   )

@@ -4,8 +4,16 @@ export async function run(): Promise<void> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   assert(workspaceFolder !== undefined, "The web extension test workspace was not opened.");
 
-  const extension = vscode.extensions.getExtension("codewise.codewise-scip");
-  assert(extension !== undefined, "Codewise SCIP extension was not discovered.");
+  const matchingExtensions = vscode.extensions.all.filter(
+    (candidate) => candidate.packageJSON["name"] === "codewise"
+  );
+  const extension = matchingExtensions[0];
+  assert(
+    matchingExtensions.length === 1 && extension !== undefined,
+    `Expected one Codewise extension; found: ${
+      matchingExtensions.map((candidate) => candidate.id).join(", ") || "none"
+    }.`
+  );
   await extension.activate();
 
   const sourceUri = vscode.Uri.joinPath(workspaceFolder.uri, "src", "Widget.cs");

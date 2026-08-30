@@ -89,8 +89,8 @@ Run the extension in an isolated VS Code Extension Host:
 npm run test:extension
 ```
 
-Alternatively, use the **Run Codewise SCIP on Roslyn** launch configuration and
-select the generated index with **SCIP: Select Index File**.
+Alternatively, use the **Run Codewise on Roslyn** launch configuration and
+select the generated index with **Codewise: Select Index File**.
 
 When no index path is configured and `.scip\index.scip` is absent, opening a
 Roslyn root workspace makes the extension download the retained
@@ -104,17 +104,17 @@ index is cached in extension global storage and used.
 The extension manifest includes both desktop and browser entry points. In
 vscode.dev and github.dev, the extension reads `.scip/index.scip` through
 `vscode.workspace.fs` and transfers it to a bundled Web Worker language server.
-The **SCIP: Select Index File** command can select another index exposed by the
+The **Codewise: Select Index File** command can select another index exposed by the
 virtual workspace.
 
 For a Roslyn workspace without a checked-in index, enter the exact 40-character
 workspace commit when prompted. The extension remembers it in workspace state,
 downloads the matching workflow artifact, verifies it, and caches it in web
 extension storage. You can instead preconfigure
-`codewise.scip.roslynCommit`. github.dev does not expose the active Git commit
+`codewise.roslynCommit`. github.dev does not expose the active Git commit
 to extensions, so this value cannot be inferred there.
 
-Use the **Run Codewise SCIP for Web** launch configuration to build the
+Use the **Run Codewise for Web** launch configuration to build the
 extension and open an interactive local VS Code web workbench. The prompted
 workspace folder should contain `.scip\index.scip`, unless the Roslyn artifact
 download flow will provide it.
@@ -126,7 +126,7 @@ Location...** with:
 npm run package:extension:web
 ```
 
-The command writes `artifacts\web-extension\codewise-scip`. Host that directory
+The command writes `artifacts\web-extension\codewise`. Host that directory
 without changing its layout.
 
 Hosted vscode.dev and github.dev enforce a fixed `connect-src` Content Security
@@ -149,7 +149,7 @@ Package and serve the extension:
 
 ```powershell
 npm run package:extension:web
-npx serve artifacts\web-extension\codewise-scip `
+npx serve artifacts\web-extension\codewise `
   --cors `
   -l 5000 `
   --ssl-cert "$HOME\.certs\localhost.pem" `

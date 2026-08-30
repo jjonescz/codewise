@@ -31,7 +31,7 @@ describe("createBrowserWorker", () => {
 
     const managed = await createBrowserWorker(
       "https://localhost:5000/dist/web/server.js",
-      "Codewise SCIP Language Server",
+      "Codewise Language Server",
       (message) => logs.push(message),
       dependencies
     );
@@ -42,7 +42,7 @@ describe("createBrowserWorker", () => {
     );
     expect(managed.worker).toEqual({
       url: "blob:https://vscode.dev/server",
-      name: "Codewise SCIP Language Server"
+      name: "Codewise Language Server"
     });
     expect(logs).toContain(
       "Created the browser language server from a local blob URL."
@@ -74,7 +74,7 @@ describe("createBrowserWorker", () => {
 
     await expect(createBrowserWorker(
       "https://localhost:5000/dist/web/server.js",
-      "Codewise SCIP Language Server",
+      "Codewise Language Server",
       () => undefined,
       dependencies
     )).rejects.toThrow(

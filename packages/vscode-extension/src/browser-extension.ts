@@ -23,14 +23,15 @@ interface RunningClient {
 }
 
 const commitPattern = /^[a-f0-9]{40}$/u;
-const roslynCommitStateKey = "codewise.scip.roslynCommit";
+const roslynCommitStateKey = "codewise.roslynCommit";
+const legacyRoslynCommitStateKey = "codewise.scip.roslynCommit";
 let client: RunningClient | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const output = vscode.window.createOutputChannel("Codewise SCIP");
+  const output = vscode.window.createOutputChannel("Codewise");
   context.subscriptions.push(
     output,
-    vscode.commands.registerCommand("codewise.scip.selectIndex", async () => {
+    vscode.commands.registerCommand("codewise.selectIndex", async () => {
       const selected = await vscode.window.showOpenDialog({
         canSelectFiles: true,
         canSelectFolders: false,
@@ -51,7 +52,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
 
       await vscode.workspace.getConfiguration(
-        "codewise.scip",
+        "codewise",
         workspaceFolder.uri
       ).update(
         "indexPath",
@@ -60,7 +61,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       await restartClient(context, output);
     }),
-    vscode.commands.registerCommand("codewise.scip.restartServer", async () => {
+    vscode.commands.registerCommand("codewise.restartServer", async () => {
       await restartClient(context, output);
     })
   );
@@ -156,7 +157,7 @@ async function startClient(
   try {
     serverWorker = await createBrowserWorker(
       serverUri.toString(true),
-      "Codewise SCIP Language Server",
+      "Codewise Language Server",
       (message) => logMessage(output, message),
       defaultBrowserWorkerDependencies
     );
@@ -170,7 +171,7 @@ async function startClient(
     const message = error instanceof Error ? error.message : String(error);
     logError(output, "Browser language server startup failed", error);
     await vscode.window.showErrorMessage(
-      `Codewise SCIP browser server failed to start: ${message}`
+      `Codewise browser server failed to start: ${message}`
     );
     return;
   }
@@ -186,8 +187,8 @@ async function startClient(
     workspaceFolder
   };
   const languageClient = new LanguageClient(
-    "codewise-scip",
-    "Codewise SCIP",
+    "codewise",
+    "Codewise",
     serverWorker.worker,
     clientOptions
   );
@@ -201,7 +202,7 @@ async function startClient(
     const message = error instanceof Error ? error.message : String(error);
     logError(output, "Language client startup failed", error);
     await vscode.window.showErrorMessage(
-      `Codewise SCIP language server failed to start: ${message}`
+      `Codewise language server failed to start: ${message}`
     );
   }
 }
@@ -211,11 +212,10 @@ async function resolveIndexUri(
   workspaceFolder: vscode.WorkspaceFolder,
   output: vscode.OutputChannel
 ): Promise<vscode.Uri | undefined> {
-  const configuration = vscode.workspace.getConfiguration(
-    "codewise.scip",
+  const configuredPath = getConfiguredValue(
+    "indexPath",
     workspaceFolder.uri
   );
-  const configuredPath = configuration.get<string>("indexPath", "").trim();
   if (configuredPath !== "") {
     const configuredUri = parseConfiguredIndexUri(configuredPath);
     const isDesktopPathInVirtualWorkspace = configuredUri.scheme === "file"
@@ -256,7 +256,7 @@ async function resolveIndexUri(
   }
 
   await showIndexError(
-    "No SCIP index was found. Configure codewise.scip.indexPath or add .scip/index.scip to the workspace.",
+    "No code intelligence index was found. Configure codewise.indexPath or add .scip/index.scip to the workspace.",
     output
   );
   return undefined;
@@ -273,20 +273,19 @@ async function resolveBrowserRoslynCommit(
   context: vscode.ExtensionContext,
   workspaceFolder: vscode.WorkspaceFolder
 ): Promise<string | undefined> {
-  const configuration = vscode.workspace.getConfiguration(
-    "codewise.scip",
+  const configuredCommit = getConfiguredValue(
+    "roslynCommit",
     workspaceFolder.uri
   );
-  const configuredCommit = configuration.get<string>("roslynCommit", "").trim();
   const rememberedCommit = context.workspaceState.get<string>(
     roslynCommitStateKey,
-    ""
+    context.workspaceState.get<string>(legacyRoslynCommitStateKey, "")
   );
   const candidateCommit = (configuredCommit || rememberedCommit).toLowerCase();
   if (candidateCommit !== "") {
     if (!commitPattern.test(candidateCommit)) {
       throw new Error(
-        "codewise.scip.roslynCommit must be a full 40-character Git commit SHA."
+        "codewise.roslynCommit must be a full 40-character Git commit SHA."
       );
     }
     return candidateCommit;
@@ -386,7 +385,7 @@ async function showIndexError(
   if (selected === "Show Logs") {
     output.show(true);
   } else if (selected === "Select Index File") {
-    await vscode.commands.executeCommand("codewise.scip.selectIndex");
+    await vscode.commands.executeCommand("codewise.selectIndex");
   }
 }
 
@@ -394,10 +393,24 @@ function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (workspaceFolder === undefined) {
     void vscode.window.showErrorMessage(
-      "Codewise SCIP requires an open workspace folder."
+      "Codewise requires an open workspace folder."
     );
   }
   return workspaceFolder;
+}
+
+function getConfiguredValue(
+  key: "indexPath" | "roslynCommit",
+  scope: vscode.Uri
+): string {
+  const configured = vscode.workspace.getConfiguration("codewise", scope)
+    .get<string>(key, "")
+    .trim();
+  return configured !== ""
+    ? configured
+    : vscode.workspace.getConfiguration("codewise.scip", scope)
+      .get<string>(key, "")
+      .trim();
 }
 
 async function fileExists(indexUri: vscode.Uri): Promise<boolean> {

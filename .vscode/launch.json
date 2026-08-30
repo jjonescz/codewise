@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Codewise SCIP on Roslyn",
+      "name": "Run Codewise on Roslyn",
       "type": "extensionHost",
       "request": "launch",
       "args": [
@@ -16,7 +16,7 @@
       "preLaunchTask": "build-codewise"
     },
     {
-      "name": "Run Codewise SCIP for Web",
+      "name": "Run Codewise for Web",
       "type": "node-terminal",
       "request": "launch",
       "command": "npx vscode-test-web --browserType=chromium --extensionDevelopmentPath=\"${workspaceFolder}\\packages\\vscode-extension\" \"${input:webWorkspacePath}\"",

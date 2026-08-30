@@ -159,7 +159,7 @@ async function getGitHubSession(
     );
     throw new Error(
       `GitHub authentication failed: ${formatError(error).split("\n", 1)[0]}. `
-      + "See the Codewise SCIP and GitHub Authentication output channels.",
+      + "See the Codewise and GitHub Authentication output channels.",
       { cause: error }
     );
   }
