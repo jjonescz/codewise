@@ -1,0 +1,145 @@
+name: Publish VS Code extension
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: publish-vscode-extension-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Validate and package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      extension-version: ${{ steps.version.outputs.extension-version }}
+      extension-id: ${{ steps.version.outputs.extension-id }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag '$GITHUB_REF_NAME' must use the form v<major>.<minor>.<patch>." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Tagged commit '$GITHUB_SHA' is not reachable from origin/main." >&2
+            exit 1
+          fi
+          extension_version="${GITHUB_REF_NAME#v}"
+          npm version "$extension_version" \
+            --workspace codewise-scip \
+            --no-git-tag-version \
+            --allow-same-version
+          manifest_version="$(
+            node --input-type=module --eval \
+              "import manifest from './packages/vscode-extension/package.json' with { type: 'json' }; console.log(manifest.version)"
+          )"
+          lock_version="$(
+            node --input-type=module --eval \
+              "import lock from './package-lock.json' with { type: 'json' }; console.log(lock.packages['packages/vscode-extension'].version)"
+          )"
+          if [[ "$manifest_version" != "$extension_version" || "$lock_version" != "$extension_version" ]]; then
+            echo "Failed to apply extension version '$extension_version'." >&2
+            exit 1
+          fi
+          extension_id="$(
+            node --input-type=module --eval \
+              "import manifest from './packages/vscode-extension/package.json' with { type: 'json' }; console.log(manifest.publisher + '.' + manifest.name)"
+          )"
+          echo "extension-version=$extension_version" >> "$GITHUB_OUTPUT"
+          echo "extension-id=$extension_id" >> "$GITHUB_OUTPUT"
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Run VS Code web integration test
+        run: npm run test:extension:web
+
+      - name: Package extension
+        shell: bash
+        env:
+          EXTENSION_VERSION: ${{ steps.version.outputs.extension-version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/extension-package
+          pushd packages/vscode-extension
+          npm exec -- vsce package \
+            --no-dependencies \
+            --out "../../artifacts/extension-package/codewise-scip-${EXTENSION_VERSION}.vsix"
+          popd
+
+      - name: Upload extension package
+        uses: actions/upload-artifact@v4
+        with:
+          name: codewise-scip-${{ steps.version.outputs.extension-version }}
+          path: artifacts/extension-package/*.vsix
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish to Visual Studio Marketplace
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: vscode-marketplace
+      url: https://marketplace.visualstudio.com/items?itemName=${{ needs.build.outputs.extension-id }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install release tooling
+        run: npm ci --ignore-scripts
+
+      - name: Download extension package
+        uses: actions/download-artifact@v4
+        with:
+          name: codewise-scip-${{ needs.build.outputs.extension-version }}
+          path: artifacts/extension-package
+
+      - name: Publish extension
+        shell: bash
+        env:
+          EXTENSION_VERSION: ${{ needs.build.outputs.extension-version }}
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$VSCE_PAT" ]]; then
+            echo "The VSCE_PAT secret is not configured in the vscode-marketplace environment." >&2
+            exit 1
+          fi
+          npm exec -- vsce publish \
+            --packagePath "artifacts/extension-package/codewise-scip-${EXTENSION_VERSION}.vsix"

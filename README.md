@@ -167,6 +167,49 @@ Build and run the headless web integration test with:
 npm run test:extension:web
 ```
 
+## Publish the VS Code extension
+
+Pushing a tag named `v<version>` runs
+`.github\workflows\publish-extension.yml`. Stable release tags use the form
+`v<major>.<minor>.<patch>`, and the tagged commit must be reachable from `main`.
+The workflow applies the tag version to the extension manifest and lockfile in
+its temporary checkout, type-checks, tests, creates a VSIX, retains it as a
+workflow artifact, and publishes that exact package to the Visual Studio
+Marketplace. It does not commit the generated version change.
+
+The workflow uses the `@vscode/vsce` version pinned in the root development
+dependencies and `package-lock.json`. This keeps the release tool visible to
+dependency automation such as Dependabot.
+
+Before the first release:
+
+1. Confirm that the publisher declared in
+   `packages\vscode-extension\package.json` exists in the
+   [Marketplace publisher portal](https://marketplace.visualstudio.com/manage)
+   and that your account can publish to it. Choose this publisher before the
+   first release because it forms part of the extension's Marketplace identity.
+2. Create an Azure DevOps personal access token for **All accessible
+   organizations** with the **Marketplace > Manage** scope.
+3. In this GitHub repository, open **Settings > Environments** and create an
+   environment named `vscode-marketplace`.
+4. Add the token to that environment as a secret named `VSCE_PAT`.
+5. Configure the environment with required reviewers and restrict deployment
+   tags to `v*`.
+
+The publish job receives the PAT only after the unprivileged build job has
+finished testing and packaging the VSIX and any environment protection rules
+have passed. Rotate the secret before it expires.
+
+To publish version `0.0.2`, tag a commit that is already on `main`:
+
+```powershell
+git tag v0.0.2
+git push origin v0.0.2
+```
+
+Protect the `v*` tag pattern so only release maintainers can trigger
+Marketplace publication.
+
 The standalone Node filesystem and stdio adapters remain isolated in
 `packages/scip-lsp/src/node-file-index-source.ts` and
 `packages/scip-lsp/src/node.ts`.
