@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
-import { logMessage } from "./extension-logging.js";
-import { downloadRoslynRelease } from "./github-release.js";
+import { formatError, logError, logMessage } from "./extension-logging.js";
+import { downloadRoslynArtifact } from "./github-artifact.js";
 import {
   extractVerifiedRoslynIndex,
   RoslynIndexValidationError,
@@ -58,14 +58,17 @@ export async function resolveDownloadedRoslynIndex(
       cancellable: false
     },
     async (progress) => {
-      progress.report({ message: "Finding public index release..." });
-      const bundle = await downloadRoslynRelease(
+      progress.report({ message: "Authenticating with GitHub..." });
+      const session = await getGitHubSession(output);
+      progress.report({ message: "Finding workflow artifact..." });
+      const artifact = await downloadRoslynArtifact(
         commit,
+        session.accessToken,
         (message) => logMessage(output, message)
       );
       progress.report({ message: "Extracting and verifying index..." });
-      const verified = await extractVerifiedRoslynIndex(bundle, commit);
-      logMessage(output, "Release extraction and manifest verification succeeded.");
+      const verified = await extractVerifiedRoslynIndex(artifact, commit);
+      logMessage(output, "Artifact extraction and manifest verification succeeded.");
       return verified;
     }
   );
@@ -82,6 +85,48 @@ export async function resolveDownloadedRoslynIndex(
     `Codewise downloaded the Roslyn SCIP index for ${commit.slice(0, 12)}.`
   );
   return indexUri;
+}
+
+async function getGitHubSession(
+  output: vscode.OutputChannel
+): Promise<vscode.AuthenticationSession> {
+  const scopes = ["repo"] as const;
+  try {
+    logMessage(output, "Checking for an approved GitHub authentication session.");
+    const existingSession = await vscode.authentication.getSession(
+      "github",
+      scopes,
+      { silent: true }
+    );
+    if (existingSession !== undefined) {
+      logMessage(output, "Reusing an approved GitHub authentication session.");
+      return existingSession;
+    }
+
+    logMessage(
+      output,
+      "Requesting permission to use a GitHub session for artifact downloads."
+    );
+    const session = await vscode.authentication.getSession("github", scopes, {
+      createIfNone: {
+        detail:
+          "Codewise needs GitHub access to download a public SCIP workflow artifact."
+      }
+    });
+    logMessage(output, "GitHub authentication succeeded.");
+    return session;
+  } catch (error) {
+    logError(output, "GitHub authentication failed", error);
+    logMessage(
+      output,
+      "For authentication flow details, select 'GitHub Authentication' in the Output panel."
+    );
+    throw new Error(
+      `GitHub authentication failed: ${formatError(error).split("\n", 1)[0]}. `
+      + "See the Codewise and GitHub Authentication output channels.",
+      { cause: error }
+    );
+  }
 }
 
 async function isRoslynWorkspace(

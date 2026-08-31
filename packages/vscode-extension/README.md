@@ -11,10 +11,11 @@ Select Index File** and **Codewise: Restart Language Server** from the Command
 Palette.
 
 When the setting is empty and the root workspace is a `dotnet/roslyn` checkout,
-the extension anonymously downloads the `roslyn-scip-<HEAD>` public release
-from `jjonescz/indexer`. It never requests GitHub authentication for this
-repository. The extension verifies the bundle's commit, byte size, and SHA-256
-from its manifest and caches the index by commit in extension global storage.
+the extension downloads the `roslyn-scip-<HEAD>` GitHub Actions artifact from
+`jjonescz/indexer`. GitHub requires authentication for artifact downloads, so
+the extension requests permission to use a GitHub session with the `repo`
+scope. It verifies the bundle's commit, byte size, and SHA-256 from its manifest
+and caches the index by commit in extension global storage.
 
 Desktop VS Code obtains the Roslyn commit from local Git. On vscode.dev and
 github.dev, the extension first obtains the exact revision from the built-in
@@ -28,4 +29,7 @@ When a virtual web workspace inherits a desktop `file` path in
 `codewise.indexPath`, the extension ignores that unavailable path and
 continues with the workspace index and hosted-artifact fallbacks.
 
-Release download diagnostics are written to **Output: Codewise**.
+Authentication and artifact diagnostics are written to **Output: Codewise**
+without access tokens or account identifiers. If GitHub authentication fails,
+also inspect **Output: GitHub Authentication** for the built-in provider's
+per-flow diagnostics.

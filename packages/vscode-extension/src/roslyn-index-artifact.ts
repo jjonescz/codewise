@@ -1,4 +1,4 @@
-import { gunzipSync } from "fflate";
+import { gunzipSync, unzipSync } from "fflate";
 
 const bundleFileName = "roslyn-scip.tar.gz";
 const indexFileName = "index.scip";
@@ -17,15 +17,36 @@ export class RoslynIndexValidationError extends Error {
 }
 
 export async function extractVerifiedRoslynIndex(
-  bundle: Uint8Array,
+  artifact: Uint8Array,
   expectedCommit: string
 ): Promise<VerifiedRoslynIndex> {
-  let tarArchive: Uint8Array;
+  let zipEntries: Record<string, Uint8Array>;
   try {
-    tarArchive = gunzipSync(bundle);
+    zipEntries = unzipSync(artifact, {
+      filter: (entry) => normalizeArchivePath(entry.name) === bundleFileName
+    });
   } catch (error) {
     throw new RoslynIndexValidationError(
-      `The downloaded ${bundleFileName} release asset is not a valid gzip archive.`,
+      "The downloaded GitHub artifact is not a valid ZIP archive.",
+      { cause: error }
+    );
+  }
+
+  const bundles = Object.entries(zipEntries).filter(
+    ([name]) => normalizeArchivePath(name) === bundleFileName
+  );
+  if (bundles.length !== 1) {
+    throw new RoslynIndexValidationError(
+      `The GitHub artifact must contain exactly one ${bundleFileName}.`
+    );
+  }
+
+  let tarArchive: Uint8Array;
+  try {
+    tarArchive = gunzipSync(bundles[0]![1]);
+  } catch (error) {
+    throw new RoslynIndexValidationError(
+      `${bundleFileName} is not a valid gzip archive.`,
       { cause: error }
     );
   }
