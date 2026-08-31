@@ -16,6 +16,7 @@ import {
 } from "./browser-worker.js";
 import { logError, logMessage } from "./extension-logging.js";
 import {
+  detectGitHubPullRequestRevision,
   detectRemoteHubRevision,
   gitCommitPattern,
   type RemoteHubApi
@@ -294,7 +295,13 @@ async function resolveBrowserRoslynCommit(
   try {
     const detectedCommit = await detectRemoteHubRevision(
       workspaceFolder.uri,
-      (extensionId) => vscode.extensions.getExtension<RemoteHubApi>(extensionId)
+      (extensionId) => vscode.extensions.getExtension<RemoteHubApi>(extensionId),
+      async (workspaceUri) => {
+        await vscode.commands.executeCommand(
+          "remoteHub.api.getRepositoryContext",
+          workspaceUri
+        );
+      }
     );
     if (detectedCommit !== undefined) {
       logMessage(
@@ -305,12 +312,33 @@ async function resolveBrowserRoslynCommit(
     }
     logMessage(
       output,
-      "Remote Repositories did not expose the web workspace revision."
+      "Remote Repositories did not expose the web workspace revision; "
+      + "checking the GitHub pull request ref."
     );
   } catch (error) {
     logError(
       output,
       "Could not determine the web workspace revision from Remote Repositories",
+      error
+    );
+  }
+
+  try {
+    const detectedCommit = await detectGitHubPullRequestRevision(
+      workspaceFolder.uri
+    );
+    if (detectedCommit !== undefined) {
+      logMessage(
+        output,
+        `Detected Roslyn workspace commit ${detectedCommit} `
+        + "from the GitHub pull request ref."
+      );
+      return detectedCommit;
+    }
+  } catch (error) {
+    logError(
+      output,
+      "Could not determine the web workspace revision from the GitHub pull request ref",
       error
     );
   }

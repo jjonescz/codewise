@@ -18,10 +18,12 @@ extension verifies the bundle's commit, byte size, and SHA-256 from its manifest
 and caches the index by commit in extension global storage.
 
 Desktop VS Code obtains the Roslyn commit from local Git. On vscode.dev and
-github.dev, the extension obtains the exact revision from the built-in Remote
-Repositories metadata API. If that metadata is unavailable, it falls back to a
-previously entered SHA or asks for the full SHA and remembers it in workspace
-state. You can override automatic detection with `codewise.roslynCommit`.
+github.dev, the extension first obtains the exact revision from the built-in
+Remote Repositories metadata API. For a GitHub pull request workspace, it can
+also resolve the encoded pull request's head ref through the public GitHub API.
+If automatic detection is unavailable, it falls back to a previously entered
+SHA or asks for the full SHA and remembers it in workspace state. You can
+override automatic detection with `codewise.roslynCommit`.
 
 When a virtual web workspace inherits a desktop `file` path in
 `codewise.indexPath`, the extension ignores that unavailable path and
