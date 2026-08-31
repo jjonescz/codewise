@@ -53,7 +53,7 @@
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Absolute path or workspace URI to the code intelligence index. When empty, Codewise uses .scip/index.scip or downloads the matching workflow artifact for a Roslyn workspace."
+          "description": "Absolute path or workspace URI to the code intelligence index. When empty, Codewise uses .scip/index.scip or downloads the matching public release for a Roslyn workspace."
         },
         "codewise.roslynCommit": {
           "type": "string",

@@ -1,9 +1,6 @@
 import * as vscode from "vscode";
-import { formatError, logError, logMessage } from "./extension-logging.js";
-import {
-  downloadRoslynArtifact,
-  shouldRetryArtifactRequestWithAuthentication
-} from "./github-artifact.js";
+import { logMessage } from "./extension-logging.js";
+import { downloadRoslynRelease } from "./github-release.js";
 import {
   extractVerifiedRoslynIndex,
   RoslynIndexValidationError,
@@ -61,14 +58,14 @@ export async function resolveDownloadedRoslynIndex(
       cancellable: false
     },
     async (progress) => {
-      progress.report({ message: "Finding workflow artifact..." });
-      const artifact = await downloadArtifactWithOptionalAuthentication(
+      progress.report({ message: "Finding public index release..." });
+      const bundle = await downloadRoslynRelease(
         commit,
-        output
+        (message) => logMessage(output, message)
       );
       progress.report({ message: "Extracting and verifying index..." });
-      const verified = await extractVerifiedRoslynIndex(artifact, commit);
-      logMessage(output, "Artifact extraction and manifest verification succeeded.");
+      const verified = await extractVerifiedRoslynIndex(bundle, commit);
+      logMessage(output, "Release extraction and manifest verification succeeded.");
       return verified;
     }
   );
@@ -85,84 +82,6 @@ export async function resolveDownloadedRoslynIndex(
     `Codewise downloaded the Roslyn SCIP index for ${commit.slice(0, 12)}.`
   );
   return indexUri;
-}
-
-async function downloadArtifactWithOptionalAuthentication(
-  commit: string,
-  output: vscode.OutputChannel
-): Promise<Uint8Array> {
-  const logger = (message: string) => logMessage(output, message);
-  try {
-    logMessage(output, "Trying anonymous GitHub artifact access.");
-    const artifact = await downloadRoslynArtifact(
-      commit,
-      undefined,
-      logger
-    );
-    logMessage(output, "Anonymous GitHub artifact access succeeded.");
-    return artifact;
-  } catch (error) {
-    if (!shouldRetryArtifactRequestWithAuthentication(error)) {
-      throw error;
-    }
-    logMessage(
-      output,
-      "Anonymous artifact access requires authentication; requesting a GitHub session."
-    );
-  }
-
-  const session = await getGitHubSession(output);
-  return downloadRoslynArtifact(commit, session.accessToken, logger);
-}
-
-async function getGitHubSession(
-  output: vscode.OutputChannel
-): Promise<vscode.AuthenticationSession> {
-  const scopes = ["repo"] as const;
-  try {
-    logMessage(output, "Checking for an existing GitHub authentication session.");
-    const existingSession = await vscode.authentication.getSession(
-      "github",
-      scopes,
-      { silent: true }
-    );
-    if (existingSession !== undefined) {
-      logMessage(output, "Reusing an existing GitHub authentication session.");
-      logMessage(
-        output,
-        `GitHub authentication succeeded with scopes: `
-        + `${existingSession.scopes.join(", ")}.`
-      );
-      return existingSession;
-    }
-
-    logMessage(
-      output,
-      "No reusable GitHub session is available; starting interactive sign-in."
-    );
-    const session = await vscode.authentication.getSession("github", scopes, {
-      createIfNone: {
-        detail:
-          "Codewise needs repository access to download a private SCIP artifact."
-      }
-    });
-    logMessage(
-      output,
-      `GitHub authentication succeeded with scopes: ${session.scopes.join(", ")}.`
-    );
-    return session;
-  } catch (error) {
-    logError(output, "GitHub authentication failed", error);
-    logMessage(
-      output,
-      "For authentication flow details, select 'GitHub Authentication' in the Output panel."
-    );
-    throw new Error(
-      `GitHub authentication failed: ${formatError(error).split("\n", 1)[0]}. `
-      + "See the Codewise and GitHub Authentication output channels.",
-      { cause: error }
-    );
-  }
 }
 
 async function isRoslynWorkspace(

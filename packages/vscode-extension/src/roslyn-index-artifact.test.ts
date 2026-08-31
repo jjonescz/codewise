@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { gzipSync, zipSync } from "fflate";
+import { gzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import {
   extractVerifiedRoslynIndex,
@@ -12,9 +12,9 @@ const encoder = new TextEncoder();
 describe("extractVerifiedRoslynIndex", () => {
   it("extracts an index whose commit, size, and SHA-256 match the manifest", async () => {
     const index = encoder.encode("valid SCIP bytes");
-    const artifact = createArtifact(index, commit);
+    const bundle = createBundle(index, commit);
 
-    const result = await extractVerifiedRoslynIndex(artifact, commit);
+    const result = await extractVerifiedRoslynIndex(bundle, commit);
 
     expect(result.index).toEqual(index);
     expect(JSON.parse(new TextDecoder().decode(result.manifest))).toMatchObject({
@@ -25,14 +25,14 @@ describe("extractVerifiedRoslynIndex", () => {
   });
 
   it("rejects an index produced for a different Roslyn commit", async () => {
-    const artifact = createArtifact(
+    const bundle = createBundle(
       encoder.encode("valid SCIP bytes"),
       "1111111111111111111111111111111111111111"
     );
 
-    await expect(extractVerifiedRoslynIndex(artifact, commit))
+    await expect(extractVerifiedRoslynIndex(bundle, commit))
       .rejects.toThrowError(RoslynIndexValidationError);
-    await expect(extractVerifiedRoslynIndex(artifact, commit))
+    await expect(extractVerifiedRoslynIndex(bundle, commit))
       .rejects.toThrow(`not ${commit}`);
   });
 
@@ -40,17 +40,17 @@ describe("extractVerifiedRoslynIndex", () => {
     const originalIndex = encoder.encode("original SCIP bytes");
     const replacementIndex = encoder.encode("modified SCIP bytes");
     const manifest = createManifest(originalIndex, commit);
-    const artifact = wrapBundle(createTar({
+    const bundle = wrapBundle(createTar({
       "index.scip": replacementIndex,
       "manifest.json": manifest
     }));
 
-    await expect(extractVerifiedRoslynIndex(artifact, commit))
+    await expect(extractVerifiedRoslynIndex(bundle, commit))
       .rejects.toThrow("SHA-256 does not match");
   });
 });
 
-function createArtifact(index: Uint8Array, roslynCommit: string): Uint8Array {
+function createBundle(index: Uint8Array, roslynCommit: string): Uint8Array {
   return wrapBundle(createTar({
     "index.scip": index,
     "manifest.json": createManifest(index, roslynCommit)
@@ -67,9 +67,7 @@ function createManifest(index: Uint8Array, roslynCommit: string): Uint8Array {
 }
 
 function wrapBundle(tarArchive: Uint8Array): Uint8Array {
-  return zipSync({
-    "roslyn-scip.tar.gz": gzipSync(tarArchive)
-  });
+  return gzipSync(tarArchive);
 }
 
 function createTar(entries: Readonly<Record<string, Uint8Array>>): Uint8Array {
