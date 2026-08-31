@@ -20,6 +20,9 @@
   "capabilities": {
     "virtualWorkspaces": {
       "supported": true
+    },
+    "untrustedWorkspaces": {
+      "supported": true
     }
   },
   "categories": [
