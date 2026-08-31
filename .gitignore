@@ -5,7 +5,7 @@ coverage/
 .vscode-test-web/
 *.vsix
 
-# Generated SCIP indexes, logs, and manifests can be very large.
+# Generated code indexes, logs, and manifests can be very large.
 artifacts/
 
 # Separate checkout for the GitHub-hosted Roslyn indexer service.

@@ -1,7 +1,7 @@
 import { gunzipSync, unzipSync } from "fflate";
 
-const bundleFileName = "roslyn-scip.tar.gz";
-const indexFileName = "index.scip";
+const bundleFileName = "roslyn-codewise.tar.gz";
+const indexFileName = "index.db";
 const manifestFileName = "manifest.json";
 
 export interface VerifiedRoslynIndex {
@@ -77,26 +77,26 @@ export async function verifyRoslynIndex(
     manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes));
   } catch (error) {
     throw new RoslynIndexValidationError(
-      "The Roslyn SCIP manifest is not valid UTF-8 JSON.",
+      "The Roslyn Codewise manifest is not valid UTF-8 JSON.",
       { cause: error }
     );
   }
 
-  if (!isRecord(manifest) || manifest["schemaVersion"] !== 1) {
+  if (!isRecord(manifest) || manifest["schemaVersion"] !== 2) {
     throw new RoslynIndexValidationError(
-      "The Roslyn SCIP manifest has an unsupported schema version."
+      "The Roslyn Codewise manifest has an unsupported schema version."
     );
   }
   if (manifest["roslynCommit"] !== expectedCommit) {
     throw new RoslynIndexValidationError(
-      `The Roslyn SCIP manifest targets ${String(manifest["roslynCommit"])}, not ${expectedCommit}.`
+      `The Roslyn Codewise manifest targets ${String(manifest["roslynCommit"])}, not ${expectedCommit}.`
     );
   }
 
   const byteSize = manifest["byteSize"];
   if (!Number.isSafeInteger(byteSize) || byteSize !== index.byteLength) {
     throw new RoslynIndexValidationError(
-      "The Roslyn SCIP index size does not match its manifest."
+      "The Roslyn Codewise index size does not match its manifest."
     );
   }
 
@@ -106,7 +106,7 @@ export async function verifyRoslynIndex(
     || !/^[a-f0-9]{64}$/u.test(expectedSha256)
   ) {
     throw new RoslynIndexValidationError(
-      "The Roslyn SCIP manifest does not contain a valid SHA-256."
+      "The Roslyn Codewise manifest does not contain a valid SHA-256."
     );
   }
 
@@ -120,7 +120,7 @@ export async function verifyRoslynIndex(
   ).join("");
   if (actualSha256 !== expectedSha256) {
     throw new RoslynIndexValidationError(
-      "The Roslyn SCIP index SHA-256 does not match its manifest."
+      "The Roslyn Codewise index SHA-256 does not match its manifest."
     );
   }
 }
@@ -148,13 +148,13 @@ function readSelectedTarFiles(
     const paddedSize = Math.ceil(size / 512) * 512;
     const nextOffset = dataOffset + paddedSize;
     if (nextOffset > archive.byteLength) {
-      throw new RoslynIndexValidationError("The Roslyn SCIP tar archive is truncated.");
+      throw new RoslynIndexValidationError("The Roslyn Codewise tar archive is truncated.");
     }
 
     if ((type === 0 || type === 48) && selectedNames.has(fullName)) {
       if (files.has(fullName)) {
         throw new RoslynIndexValidationError(
-          `The Roslyn SCIP tar archive contains duplicate ${fullName} entries.`
+          `The Roslyn Codewise tar archive contains duplicate ${fullName} entries.`
         );
       }
       files.set(fullName, archive.slice(dataOffset, dataOffset + size));
@@ -174,7 +174,7 @@ function verifyTarHeaderChecksum(header: Uint8Array): void {
   }
   if (actual !== expected) {
     throw new RoslynIndexValidationError(
-      "The Roslyn SCIP tar archive has an invalid header checksum."
+      "The Roslyn Codewise tar archive has an invalid header checksum."
     );
   }
 }
@@ -188,14 +188,14 @@ function readTarOctal(
   const value = readTarString(header, offset, length).trim();
   if (!/^[0-7]+$/u.test(value)) {
     throw new RoslynIndexValidationError(
-      `The Roslyn SCIP tar archive has an invalid ${fieldName}.`
+      `The Roslyn Codewise tar archive has an invalid ${fieldName}.`
     );
   }
 
   const parsed = Number.parseInt(value, 8);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
     throw new RoslynIndexValidationError(
-      `The Roslyn SCIP tar archive has an unsupported ${fieldName}.`
+      `The Roslyn Codewise tar archive has an unsupported ${fieldName}.`
     );
   }
   return parsed;

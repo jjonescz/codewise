@@ -6,6 +6,7 @@ export interface IndexBootstrapRequest {
   readonly kind: typeof indexBootstrapRequestKind;
   readonly index: ArrayBuffer;
   readonly description: string;
+  readonly sqliteModuleUri: string;
 }
 
 export interface IndexBootstrapReady {

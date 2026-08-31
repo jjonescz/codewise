@@ -2,10 +2,10 @@
   "version": 1,
   "isRoot": true,
   "tools": {
-    "scip-dotnet": {
-      "version": "0.2.14",
+    "roslyn-language-server": {
+      "version": "5.12.0-1.26426.8",
       "commands": [
-        "scip-dotnet"
+        "roslyn-language-server"
       ],
       "rollForward": false
     }

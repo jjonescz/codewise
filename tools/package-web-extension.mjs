@@ -46,7 +46,9 @@ export async function packageWebExtension({
     ["README.md", "README.md"],
     ["LICENSE", "LICENSE"],
     [manifest.browser, hostedBrowserEntry],
-    ["dist/web/server.js", "dist/web/server.js"]
+    ["dist/web/server.js", "dist/web/server.js"],
+    ["dist/web/sqlite/index.mjs", "dist/web/sqlite/index.mjs"],
+    ["dist/web/sqlite/sqlite3.wasm", "dist/web/sqlite/sqlite3.wasm"]
   ];
 
   await rm(outputDirectory, { recursive: true, force: true });

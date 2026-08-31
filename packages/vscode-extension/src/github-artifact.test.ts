@@ -21,7 +21,7 @@ describe("downloadRoslynArtifact", () => {
           artifacts: [
             {
               id: 42,
-              name: `roslyn-scip-${commit}`,
+              name: `roslyn-codewise-${commit}`,
               expired: false,
               created_at: "2026-08-29T08:00:00Z"
             }
@@ -53,7 +53,7 @@ describe("downloadRoslynArtifact", () => {
       `Bearer ${accessToken}`
     ]);
     expect(logs).toEqual([
-      `Looking up GitHub Actions artifact roslyn-scip-${commit}.`,
+      `Looking up GitHub Actions artifact roslyn-codewise-${commit}.`,
       "Artifact lookup returned HTTP 200.",
       "Artifact lookup returned 1 result(s), 1 retained candidate(s).",
       "Downloading GitHub Actions artifact 42 (created 2026-08-29T08:00:00Z).",

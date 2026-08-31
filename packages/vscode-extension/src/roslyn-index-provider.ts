@@ -35,26 +35,26 @@ export async function resolveDownloadedRoslynIndex(
     return undefined;
   }
   validateCommit(commit);
-  logMessage(output, `Resolving SCIP index for Roslyn commit ${commit}.`);
+  logMessage(output, `Resolving Codewise index for Roslyn commit ${commit}.`);
 
   const cacheDirectory = vscode.Uri.joinPath(
     context.globalStorageUri,
     "roslyn",
     commit
   );
-  const indexUri = vscode.Uri.joinPath(cacheDirectory, "index.scip");
+  const indexUri = vscode.Uri.joinPath(cacheDirectory, "index.db");
   const manifestUri = vscode.Uri.joinPath(cacheDirectory, "manifest.json");
 
   if (await isValidCachedIndex(indexUri, manifestUri, commit, output)) {
-    logMessage(output, `Using cached Roslyn SCIP index for ${commit}.`);
+    logMessage(output, `Using cached Roslyn Codewise index for ${commit}.`);
     return indexUri;
   }
-  logMessage(output, `No valid cached SCIP index was found for ${commit}.`);
+  logMessage(output, `No valid cached Codewise index was found for ${commit}.`);
 
   const verifiedIndex = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: `Downloading Roslyn SCIP index for ${commit.slice(0, 12)}`,
+      title: `Downloading Roslyn Codewise index for ${commit.slice(0, 12)}`,
       cancellable: false
     },
     async (progress) => {
@@ -80,9 +80,9 @@ export async function resolveDownloadedRoslynIndex(
     verifiedIndex.index,
     verifiedIndex.manifest
   );
-  logMessage(output, `Downloaded and cached Roslyn SCIP index for ${commit}.`);
+  logMessage(output, `Downloaded and cached Roslyn Codewise index for ${commit}.`);
   void vscode.window.showInformationMessage(
-    `Codewise downloaded the Roslyn SCIP index for ${commit.slice(0, 12)}.`
+    `Codewise downloaded the Roslyn index for ${commit.slice(0, 12)}.`
   );
   return indexUri;
 }
@@ -110,7 +110,7 @@ async function getGitHubSession(
     const session = await vscode.authentication.getSession("github", scopes, {
       createIfNone: {
         detail:
-          "Codewise needs GitHub access to download a public SCIP workflow artifact."
+          "Codewise needs GitHub access to download a public workflow artifact."
       }
     });
     logMessage(output, "GitHub authentication succeeded.");
@@ -173,7 +173,7 @@ async function isValidCachedIndex(
     }
     logMessage(
       output,
-      `Ignoring invalid cached Roslyn SCIP index: ${error.message}`
+      `Ignoring invalid cached Roslyn Codewise index: ${error.message}`
     );
     return false;
   }
@@ -190,7 +190,7 @@ async function writeCacheAtomically(
   const suffix = `${Date.now()}-${globalThis.crypto.randomUUID()}`;
   const temporaryIndexUri = vscode.Uri.joinPath(
     cacheDirectory,
-    `index.scip.${suffix}.tmp`
+    `index.db.${suffix}.tmp`
   );
   const temporaryManifestUri = vscode.Uri.joinPath(
     cacheDirectory,

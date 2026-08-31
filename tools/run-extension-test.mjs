@@ -9,7 +9,7 @@ const commit = git.spawnSync("git", ["-C", roslynRoot, "rev-parse", "HEAD"], {
   encoding: "utf8",
   windowsHide: true
 }).stdout.trim();
-const indexPath = resolve(repositoryRoot, "artifacts", "roslyn", commit, "index.scip");
+const indexPath = resolve(repositoryRoot, "artifacts", "roslyn", commit, "index.db");
 const testArtifactDirectory = resolve(repositoryRoot, "artifacts", "extension-test");
 const workspacePath = resolve(testArtifactDirectory, "roslyn.code-workspace");
 const extensionDevelopmentPath = resolve(repositoryRoot, "packages", "vscode-extension");

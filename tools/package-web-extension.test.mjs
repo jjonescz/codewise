@@ -48,6 +48,8 @@ describe("packageWebExtension", () => {
       "README.md",
       "dist/web/extension.js",
       "dist/web/server.js",
+      "dist/web/sqlite/index.mjs",
+      "dist/web/sqlite/sqlite3.wasm",
       "package.json"
     ]);
 

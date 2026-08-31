@@ -29,7 +29,6 @@ interface RunningClient {
 }
 
 const roslynCommitStateKey = "codewise.roslynCommit";
-const legacyRoslynCommitStateKey = "codewise.scip.roslynCommit";
 let client: RunningClient | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -42,10 +41,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         canSelectFolders: false,
         canSelectMany: false,
         filters: {
-          "SCIP indexes": ["scip"]
+          "Codewise indexes": ["db", "sqlite"]
         },
-        openLabel: "Use SCIP Index",
-        title: "Select index.scip"
+        openLabel: "Use Codewise Index",
+        title: "Select index.db"
       });
       if (selected === undefined || selected.length === 0) {
         return;
@@ -120,9 +119,9 @@ async function startClient(
     indexUri = await resolveIndexUri(context, workspaceFolder, output);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logError(output, "SCIP index resolution failed", error);
+    logError(output, "Index resolution failed", error);
     await showIndexError(
-      `Codewise could not obtain a SCIP index: ${message}`,
+      `Codewise could not obtain an index: ${message}`,
       output
     );
     return;
@@ -136,7 +135,7 @@ async function startClient(
     indexBytes = await vscode.workspace.fs.readFile(indexUri);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logError(output, `Failed to read SCIP index ${indexUri.toString()}`, error);
+    logError(output, `Failed to read Codewise index ${indexUri.toString()}`, error);
     await showIndexError(
       `Codewise could not read ${indexUri.toString()}: ${message}`,
       output
@@ -145,7 +144,7 @@ async function startClient(
   }
   if (indexBytes.byteLength === 0) {
     await showIndexError(
-      `The SCIP index is empty: ${indexUri.toString()}`,
+      `The Codewise index is empty: ${indexUri.toString()}`,
       output
     );
     return;
@@ -169,7 +168,14 @@ async function startClient(
     await bootstrapWorker(
       serverWorker.worker,
       indexBytes,
-      indexUri.toString()
+      indexUri.toString(),
+      vscode.Uri.joinPath(
+        context.extensionUri,
+        "dist",
+        "web",
+        "sqlite",
+        "index.mjs"
+      ).toString(true)
     );
   } catch (error) {
     serverWorker?.dispose();
@@ -186,6 +192,18 @@ async function startClient(
       {
         scheme: workspaceFolder.uri.scheme,
         language: "csharp"
+      },
+      {
+        scheme: workspaceFolder.uri.scheme,
+        language: "vb"
+      },
+      {
+        scheme: workspaceFolder.uri.scheme,
+        language: "razor"
+      },
+      {
+        scheme: workspaceFolder.uri.scheme,
+        language: "aspnetcorerazor"
       }
     ],
     initializationOptions: {},
@@ -228,13 +246,13 @@ async function resolveIndexUri(
     if (isDesktopPathInVirtualWorkspace) {
       logMessage(
         output,
-        `Ignoring desktop SCIP index path in web workspace: ${configuredUri.toString()}`
+        `Ignoring desktop index path in web workspace: ${configuredUri.toString()}`
       );
     } else if (await fileExists(configuredUri)) {
       return configuredUri;
     } else {
       await showIndexError(
-        `The configured SCIP index does not exist: ${configuredUri.toString()}`,
+        `The configured Codewise index does not exist: ${configuredUri.toString()}`,
         output
       );
       return undefined;
@@ -243,8 +261,8 @@ async function resolveIndexUri(
 
   const workspaceIndexUri = vscode.Uri.joinPath(
     workspaceFolder.uri,
-    ".scip",
-    "index.scip"
+    ".codewise",
+    "index.db"
   );
   if (await fileExists(workspaceIndexUri)) {
     return workspaceIndexUri;
@@ -261,7 +279,7 @@ async function resolveIndexUri(
   }
 
   await showIndexError(
-    "No code intelligence index was found. Configure codewise.indexPath or add .scip/index.scip to the workspace.",
+    "No code intelligence index was found. Configure codewise.indexPath or add .codewise/index.db to the workspace.",
     output
   );
   return undefined;
@@ -345,7 +363,7 @@ async function resolveBrowserRoslynCommit(
 
   const rememberedCommit = context.workspaceState.get<string>(
     roslynCommitStateKey,
-    context.workspaceState.get<string>(legacyRoslynCommitStateKey, "")
+    ""
   );
   const normalizedRememberedCommit = rememberedCommit.toLowerCase();
   if (normalizedRememberedCommit !== "") {
@@ -358,7 +376,7 @@ async function resolveBrowserRoslynCommit(
   }
 
   const enteredCommit = await vscode.window.showInputBox({
-    title: "Roslyn SCIP index commit",
+    title: "Roslyn Codewise index commit",
     prompt: "Enter the full commit SHA checked out in this web workspace.",
     placeHolder: "40-character Git commit SHA",
     ignoreFocusOut: true,
@@ -380,12 +398,13 @@ async function resolveBrowserRoslynCommit(
 function bootstrapWorker(
   worker: Worker,
   indexBytes: Uint8Array,
-  description: string
+  description: string,
+  sqliteModuleUri: string
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       cleanup();
-      reject(new Error("Timed out while transferring the SCIP index to the worker."));
+      reject(new Error("Timed out while loading the Codewise index in the worker."));
     }, 10_000);
 
     const cleanup = () => {
@@ -409,7 +428,7 @@ function bootstrapWorker(
     };
     const handleError = (event: ErrorEvent) => {
       cleanup();
-      reject(new Error(event.message || "The SCIP browser worker failed to load."));
+      reject(new Error(event.message || "The Codewise browser worker failed to load."));
     };
 
     worker.addEventListener("message", handleMessage);
@@ -419,7 +438,8 @@ function bootstrapWorker(
     const request: IndexBootstrapRequest = {
       kind: indexBootstrapRequestKind,
       index,
-      description
+      description,
+      sqliteModuleUri
     };
     worker.postMessage(request, [index]);
   });
@@ -472,11 +492,7 @@ function getConfiguredValue(
   const configured = vscode.workspace.getConfiguration("codewise", scope)
     .get<string>(key, "")
     .trim();
-  return configured !== ""
-    ? configured
-    : vscode.workspace.getConfiguration("codewise.scip", scope)
-      .get<string>(key, "")
-      .trim();
+  return configured;
 }
 
 async function fileExists(indexUri: vscode.Uri): Promise<boolean> {

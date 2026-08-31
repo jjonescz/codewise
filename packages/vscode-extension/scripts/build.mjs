@@ -1,4 +1,5 @@
 import { mkdir, rm } from "node:fs/promises";
+import { copyFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
@@ -15,17 +16,17 @@ await Promise.all([
     bundle: true,
     platform: "node",
     format: "cjs",
-    target: "node20",
+    target: "node22",
     external: ["vscode"],
     sourcemap: true
   }),
   build({
-    entryPoints: [fileURLToPath(new URL("../../scip-lsp/src/node.ts", import.meta.url))],
+    entryPoints: [fileURLToPath(new URL("../../index-lsp/src/node.ts", import.meta.url))],
     outfile: fileURLToPath(new URL("../dist/server.cjs", import.meta.url)),
     bundle: true,
     platform: "node",
     format: "cjs",
-    target: "node20",
+    target: "node22",
     sourcemap: true
   }),
   build({
@@ -34,7 +35,7 @@ await Promise.all([
     bundle: true,
     platform: "node",
     format: "cjs",
-    target: "node20",
+    target: "node22",
     external: ["vscode"],
     sourcemap: true
   }),
@@ -73,4 +74,21 @@ await Promise.all([
     external: ["vscode"],
     sourcemap: true
   })
+]);
+
+const sqliteDirectory = fileURLToPath(new URL("../dist/web/sqlite/", import.meta.url));
+await mkdir(sqliteDirectory, { recursive: true });
+await Promise.all([
+  copyFile(
+    fileURLToPath(
+      new URL("../../../node_modules/@sqlite.org/sqlite-wasm/dist/index.mjs", import.meta.url)
+    ),
+    fileURLToPath(new URL("../dist/web/sqlite/index.mjs", import.meta.url))
+  ),
+  copyFile(
+    fileURLToPath(
+      new URL("../../../node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm", import.meta.url)
+    ),
+    fileURLToPath(new URL("../dist/web/sqlite/sqlite3.wasm", import.meta.url))
+  )
 ]);

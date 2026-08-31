@@ -1,18 +1,18 @@
 # Codewise VS Code extension
 
-This extension enables C# definition, references, and hover from a prebuilt SCIP
-index in desktop VS Code, vscode.dev, and github.dev. Desktop VS Code launches
-the bundled language server over stdio. VS Code for the Web runs the same shared
-server in a Web Worker.
+This extension enables C# definition, references, and hover from a prebuilt
+Codewise SQLite index in desktop VS Code, vscode.dev, and github.dev. Desktop VS
+Code launches the bundled language server over stdio. VS Code for the Web loads
+the same database through SQLite WASM in a Web Worker.
 
 Set `codewise.indexPath` to an absolute desktop path or a workspace URI, or
-place the index at `.scip/index.scip` in the opened workspace. Use **Codewise:
+place the index at `.codewise/index.db` in the opened workspace. Use **Codewise:
 Select Index File** and **Codewise: Restart Language Server** from the Command
 Palette.
 
 When the setting is empty and the root workspace is a `dotnet/roslyn` checkout,
-the extension downloads the `roslyn-scip-<HEAD>` GitHub Actions artifact from
-`jjonescz/indexer`. GitHub requires authentication for artifact downloads, so
+the extension downloads the `roslyn-codewise-<HEAD>` GitHub Actions artifact
+from `jjonescz/codewise`. GitHub requires authentication for artifact downloads, so
 the extension requests permission to use a GitHub session with the `repo`
 scope. It verifies the bundle's commit, byte size, and SHA-256 from its manifest
 and caches the index by commit in extension global storage.

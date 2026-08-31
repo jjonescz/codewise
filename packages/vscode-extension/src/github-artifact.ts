@@ -1,5 +1,5 @@
 const indexerOwner = "jjonescz";
-const indexerRepository = "indexer";
+const indexerRepository = "codewise";
 const githubApiVersion = "2022-11-28";
 const maximumArtifactBytes = 512 * 1024 * 1024;
 
@@ -44,7 +44,7 @@ export async function downloadRoslynArtifact(
   logger?: ArtifactLogger,
   fetcher: typeof fetch = fetch
 ): Promise<Uint8Array> {
-  const artifactName = `roslyn-scip-${commit}`;
+  const artifactName = `roslyn-codewise-${commit}`;
   logger?.(`Looking up GitHub Actions artifact ${artifactName}.`);
   const artifact = await findRoslynArtifact(
     artifactName,
@@ -54,7 +54,7 @@ export async function downloadRoslynArtifact(
   );
   if (artifact === undefined) {
     throw new Error(
-      `No retained Roslyn SCIP workflow artifact is available for commit ${commit}.`
+      `No retained Roslyn Codewise workflow artifact is available for commit ${commit}.`
     );
   }
   logger?.(

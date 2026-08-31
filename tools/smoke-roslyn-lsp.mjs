@@ -14,7 +14,7 @@ const commit = spawnSync("git", ["-C", roslynRoot, "rev-parse", "HEAD"], {
   encoding: "utf8",
   windowsHide: true
 }).stdout.trim();
-const indexPath = resolve(repositoryRoot, "artifacts", "roslyn", commit, "index.scip");
+const indexPath = resolve(repositoryRoot, "artifacts", "roslyn", commit, "index.db");
 const verificationPath = resolve(
   repositoryRoot,
   "artifacts",
@@ -23,7 +23,7 @@ const verificationPath = resolve(
   "lsp-verification.json"
 );
 const serverPath = process.env.CODEWISE_LSP_PATH
-  ?? resolve(repositoryRoot, "packages", "scip-lsp", "dist", "node.js");
+  ?? resolve(repositoryRoot, "packages", "index-lsp", "dist", "node.js");
 const rootUri = URI.file(roslynRoot);
 const cases = [
   {

@@ -11,14 +11,14 @@ const encoder = new TextEncoder();
 
 describe("extractVerifiedRoslynIndex", () => {
   it("extracts an index whose commit, size, and SHA-256 match the manifest", async () => {
-    const index = encoder.encode("valid SCIP bytes");
+    const index = encoder.encode("valid SQLite bytes");
     const artifact = createArtifact(index, commit);
 
     const result = await extractVerifiedRoslynIndex(artifact, commit);
 
     expect(result.index).toEqual(index);
     expect(JSON.parse(new TextDecoder().decode(result.manifest))).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       roslynCommit: commit,
       byteSize: index.byteLength
     });
@@ -26,7 +26,7 @@ describe("extractVerifiedRoslynIndex", () => {
 
   it("rejects an index produced for a different Roslyn commit", async () => {
     const artifact = createArtifact(
-      encoder.encode("valid SCIP bytes"),
+      encoder.encode("valid SQLite bytes"),
       "1111111111111111111111111111111111111111"
     );
 
@@ -37,11 +37,11 @@ describe("extractVerifiedRoslynIndex", () => {
   });
 
   it("rejects an index whose bytes do not match the manifest SHA-256", async () => {
-    const originalIndex = encoder.encode("original SCIP bytes");
-    const replacementIndex = encoder.encode("modified SCIP bytes");
+    const originalIndex = encoder.encode("original SQLite bytes");
+    const replacementIndex = encoder.encode("modified SQLite bytes");
     const manifest = createManifest(originalIndex, commit);
     const artifact = wrapBundle(createTar({
-      "index.scip": replacementIndex,
+      "index.db": replacementIndex,
       "manifest.json": manifest
     }));
 
@@ -52,14 +52,14 @@ describe("extractVerifiedRoslynIndex", () => {
 
 function createArtifact(index: Uint8Array, roslynCommit: string): Uint8Array {
   return wrapBundle(createTar({
-    "index.scip": index,
+    "index.db": index,
     "manifest.json": createManifest(index, roslynCommit)
   }));
 }
 
 function createManifest(index: Uint8Array, roslynCommit: string): Uint8Array {
   return encoder.encode(JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     roslynCommit,
     byteSize: index.byteLength,
     sha256: createHash("sha256").update(index).digest("hex")
@@ -68,7 +68,7 @@ function createManifest(index: Uint8Array, roslynCommit: string): Uint8Array {
 
 function wrapBundle(tarArchive: Uint8Array): Uint8Array {
   return zipSync({
-    "roslyn-scip.tar.gz": gzipSync(tarArchive)
+    "roslyn-codewise.tar.gz": gzipSync(tarArchive)
   });
 }
 

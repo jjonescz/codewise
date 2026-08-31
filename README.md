@@ -1,39 +1,26 @@
 # Codewise
 
-Codewise is an experimental SCIP-backed language server and VS Code extension.
-The current prototype indexes a built Roslyn compiler project and serves
-definition, references, and hover over the Language Server Protocol.
+Codewise is an experimental precomputed-code-intelligence language server and
+VS Code extension. A generic Language Server Protocol crawler records
+definition, references, document highlights, and hover answers in SQLite, and
+Codewise serves those answers offline over LSP.
 
 ## Packages
 
-- `packages/scip-core`: runtime-neutral SCIP decoding, validation, and queries.
-- `packages/scip-lsp`: standalone TypeScript language server over stdio.
+- `packages/index-core`: runtime-neutral SQLite schema validation and queries.
+- `packages/index-lsp`: standalone TypeScript language server over stdio.
+- `packages/lsp-crawler`: generic Node.js LSP client and resumable SQLite writer.
 - `packages/vscode-extension`: desktop and web VS Code language clients.
 - `tools/index-roslyn`: reproducible local Roslyn indexing and manifest tool.
+- `tools/hosted-indexing`: scheduled Roslyn discovery and index-state handling.
 
 The shared core and LSP handlers avoid Node and VS Code APIs. Desktop VS Code
 runs the server over stdio, while vscode.dev and github.dev run it in a Web
 Worker.
 
-## Companion indexer repository
-
-GitHub-hosted Roslyn indexing lives in the separate public repository
-[`jjonescz/indexer`](https://github.com/jjonescz/indexer). When working on its
-workflows or orchestration, check it out as `indexer` directly under this
-repository root:
-
-```powershell
-gh repo clone jjonescz/indexer indexer
-```
-
-The nested checkout is intentionally ignored by this repository and is not a
-submodule. Treat it as an independent Git repository: inspect, commit, and push
-its changes separately from Codewise. Future agents working on hosted indexing
-should reuse this location, cloning it first when `indexer\.git` is absent.
-
 ## Prerequisites
 
-- Node.js 20 or newer.
+- Node.js 22 or newer.
 - A .NET SDK compatible with the target checkout.
 - A restored and built Roslyn checkout.
 
@@ -46,10 +33,34 @@ npm run build
 npm test
 ```
 
+## Generic LSP crawler
+
+`@codewise/lsp-crawler` launches any stdio language server from a
+`CrawlerConfig`. Configure the workspace, server command and arguments, and the
+file-extension-to-language-ID mapping, then call:
+
+```typescript
+import { crawlWorkspace } from "@codewise/lsp-crawler";
+
+await crawlWorkspace(config, ".codewise/index.db");
+```
+
+The crawler discovers candidate positions from semantic tokens and document
+symbols, with an optional lexical fallback. It stores definitions, declarations,
+references, document highlights, hovers, retryable failures, source hashes, and
+resume state. Changing or removing a document invalidates workspace answers
+that may point into it.
+
+Language servers can require non-standard server-to-client requests. Fixed
+acknowledgements can be supplied through `server.requestResponses`; the Roslyn
+configuration acknowledges `razor/updateHtml`. This provides C# information in
+Razor documents but does not run a separate HTML language server.
+
 ## Generate the local Roslyn index
 
-By default, the command targets `C:\roslyn-3` and
-`src\Compilers\CSharp\Portable\Microsoft.CodeAnalysis.CSharp.csproj`:
+By default, the command targets `C:\roslyn-3`. It launches the pinned official
+`roslyn-language-server`, opens C#, Visual Basic, Razor, and CSHTML documents,
+and crawls semantic-token positions including locals:
 
 ```powershell
 npm run index:roslyn
@@ -61,7 +72,9 @@ To use another checkout:
 npm run index:roslyn -- --roslyn-root C:\path\to\roslyn
 ```
 
-Generated indexes, logs, and manifests are written below
+The crawler covers the full workspace loaded by Roslyn rather than invoking a
+language-specific batch indexer. Generated databases, logs, and manifests are
+written below
 `artifacts\roslyn\<commit>\` and are ignored by version control.
 
 ## Run the standalone language server
@@ -69,11 +82,11 @@ Generated indexes, logs, and manifests are written below
 Any LSP client can launch the server over stdio after `npm run build`:
 
 ```powershell
-node packages\scip-lsp\dist\node.js --stdio --index C:\path\to\index.scip
+node packages\index-lsp\dist\node.js --stdio --index C:\path\to\index.db
 ```
 
-The workspace root supplied during LSP initialization must be the same source
-root used as `scip-dotnet --working-directory`.
+Indexed workspace locations are stored with portable relative paths, so the
+consumer may use a different checkout root from the indexing runner.
 
 ## Test with Roslyn
 
@@ -92,9 +105,9 @@ npm run test:extension
 Alternatively, use the **Run Codewise on Roslyn** launch configuration and
 select the generated index with **Codewise: Select Index File**.
 
-When no index path is configured and `.scip\index.scip` is absent, opening a
+When no index path is configured and `.codewise\index.db` is absent, opening a
 Roslyn root workspace makes the extension download the retained
-`roslyn-scip-<HEAD>` Actions artifact from `jjonescz/indexer`. GitHub requires
+`roslyn-codewise-<HEAD>` Actions artifact from this repository. GitHub requires
 authentication to download workflow artifacts, so Codewise requests permission
 to use a GitHub session. The artifact manifest is verified before the index is
 cached in extension global storage and used.
@@ -102,8 +115,10 @@ cached in extension global storage and used.
 ## VS Code for the Web
 
 The extension manifest includes both desktop and browser entry points. In
-vscode.dev and github.dev, the extension reads `.scip/index.scip` through
-`vscode.workspace.fs` and transfers it to a bundled Web Worker language server.
+vscode.dev and github.dev, the extension reads `.codewise/index.db` through
+`vscode.workspace.fs` and transfers it to a Web Worker. The desktop server uses
+Node's SQLite implementation; the browser worker loads the same database with
+the official SQLite WASM build bundled in the extension.
 The **Codewise: Select Index File** command can select another index exposed by the
 virtual workspace.
 
@@ -116,7 +131,7 @@ to extensions, so this value cannot be inferred there.
 
 Use the **Run Codewise for Web** launch configuration to build the
 extension and open an interactive local VS Code web workbench. The prompted
-workspace folder should contain `.scip\index.scip`, unless the Roslyn artifact
+workspace folder should contain `.codewise\index.db`, unless the Roslyn artifact
 download flow will provide it.
 
 Create an unpacked deployment directory for **Developer: Install Extension from
@@ -215,5 +230,24 @@ Protect the `v*` tag pattern so only release maintainers can trigger
 Marketplace publication.
 
 The standalone Node filesystem and stdio adapters remain isolated in
-`packages/scip-lsp/src/node-file-index-source.ts` and
-`packages/scip-lsp/src/node.ts`.
+`packages/index-lsp/src/node-file-index-source.ts` and
+`packages/index-lsp/src/node.ts`.
+
+## Hosted Roslyn indexing
+
+`.github\workflows\scan-roslyn.yml` scans Roslyn main and open pull request
+heads and dispatches up to four isolated `.github\workflows\index-roslyn.yml`
+runs. Each run builds `Roslyn.slnx`, crawls the official Roslyn language server,
+and uploads `roslyn-codewise-<sha>` for 90 days.
+
+Roslyn source and builds are untrusted. The index job has no repository
+permissions or secrets and fetches both repositories anonymously. The trusted
+finalizer runs separately, receives no files or processes from the index job,
+and records only its GitHub conclusion on the `state` branch. Treat downloaded
+SQLite files as untrusted; consumers open them read-only, disable trusted
+schemas and extension loading, and validate the complete schema before queries.
+
+The trusted scanner creates the `state` branch and `index-state.json`
+automatically on its first run. Scheduled scans run only when the repository variable
+`ENABLE_SCHEDULED_INDEXING` is `true`. Manual **Scan Roslyn** runs remain
+available, including the `reset_sha` retry input.

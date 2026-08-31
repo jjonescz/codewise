@@ -22,10 +22,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         canSelectFolders: false,
         canSelectMany: false,
         filters: {
-          "SCIP indexes": ["scip"]
+          "Codewise indexes": ["db", "sqlite"]
         },
-        openLabel: "Use SCIP Index",
-        title: "Select index.scip"
+        openLabel: "Use Codewise Index",
+        title: "Select index.db"
       });
       if (selected === undefined || selected.length === 0) {
         return;
@@ -34,7 +34,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const indexUri = selected[0]!;
       if (indexUri.scheme !== "file") {
         await vscode.window.showErrorMessage(
-          "The desktop prototype requires a local SCIP index file."
+          "The desktop extension requires a local Codewise index database."
         );
         return;
       }
@@ -105,9 +105,9 @@ async function startClient(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logError(output, "SCIP index resolution failed", error);
+    logError(output, "Index resolution failed", error);
     await showIndexError(
-      `Codewise could not obtain a SCIP index: ${message}`,
+      `Codewise could not obtain an index: ${message}`,
       output
     );
     return;
@@ -128,6 +128,18 @@ async function startClient(
       {
         scheme: "file",
         language: "csharp"
+      },
+      {
+        scheme: "file",
+        language: "vb"
+      },
+      {
+        scheme: "file",
+        language: "razor"
+      },
+      {
+        scheme: "file",
+        language: "aspnetcorerazor"
       }
     ],
     initializationOptions: { indexPath: resolvedIndexPath },
@@ -165,7 +177,7 @@ async function resolveIndexPath(
       return configuredPath;
     }
     await showIndexError(
-      `The configured SCIP index does not exist: ${configuredPath}`,
+      `The configured Codewise index does not exist: ${configuredPath}`,
       output
     );
     return undefined;
@@ -173,8 +185,8 @@ async function resolveIndexPath(
 
   const workspaceIndexUri = vscode.Uri.joinPath(
     workspaceFolder.uri,
-    ".scip",
-    "index.scip"
+    ".codewise",
+    "index.db"
   );
   if (await fileExists(workspaceIndexUri)) {
     return workspaceIndexUri.fsPath;
@@ -191,7 +203,7 @@ async function resolveIndexPath(
   }
 
   await showIndexError(
-    "No code intelligence index was found. Configure codewise.indexPath or add .scip/index.scip to the workspace.",
+    "No code intelligence index was found. Configure codewise.indexPath or add .codewise/index.db to the workspace.",
     output
   );
   return undefined;
@@ -230,11 +242,7 @@ function getConfiguredValue(
   const configured = vscode.workspace.getConfiguration("codewise", scope)
     .get<string>(key, "")
     .trim();
-  return configured !== ""
-    ? configured
-    : vscode.workspace.getConfiguration("codewise.scip", scope)
-      .get<string>(key, "")
-      .trim();
+  return configured;
 }
 
 async function fileExists(indexUri: vscode.Uri): Promise<boolean> {
