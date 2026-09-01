@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-09-01T13:10:37.538Z",
+  "updatedAt": "2026-09-01T13:11:01.327Z",
   "entries": {
     "1bfaa981d60828d10bad08aaa232178db8f06af6": {
       "candidate": {
@@ -22,10 +22,10 @@
         "sourceLabel": "PR #85115",
         "pullRequestNumber": 85115
       },
+      "status": "failed",
       "attempts": 1,
       "lastAttemptAt": "2026-09-01T13:10:37.538Z",
-      "lastConclusion": "failure",
-      "status": "failed"
+      "lastConclusion": "failure"
     },
     "9e7d04312d48e081599f55782eb1954b8a0dab68": {
       "candidate": {
@@ -35,10 +35,10 @@
         "sourceLabel": "PR #85046",
         "pullRequestNumber": 85046
       },
-      "status": "queued",
       "attempts": 1,
-      "lastAttemptAt": "2026-09-01T12:56:31.263Z",
-      "lastConclusion": "queued"
+      "lastAttemptAt": "2026-09-01T13:11:01.327Z",
+      "lastConclusion": "failure",
+      "status": "failed"
     },
     "b60c0c1acd217eb76bc75ba1b082f2cecd159206": {
       "candidate": {
