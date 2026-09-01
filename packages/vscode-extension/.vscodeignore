@@ -1,7 +1,0 @@
-src/**
-scripts/**
-tsconfig.json
-node_modules/**
-dist/**/*.map
-dist/test-runner.cjs
-dist/web/test-runner.cjs

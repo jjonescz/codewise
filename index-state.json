@@ -1,57 +1,5 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-09-01T12:38:59.659Z",
-  "entries": {
-    "1bfaa981d60828d10bad08aaa232178db8f06af6": {
-      "candidate": {
-        "sha": "1bfaa981d60828d10bad08aaa232178db8f06af6",
-        "sourceKind": "main",
-        "sourceRef": "refs/heads/main",
-        "sourceLabel": "main"
-      },
-      "status": "queued",
-      "attempts": 1,
-      "lastAttemptAt": "2026-09-01T12:38:59.659Z",
-      "lastConclusion": "queued"
-    },
-    "dce3074eb40cd8a71791b9048b3f2820b4497909": {
-      "candidate": {
-        "sha": "dce3074eb40cd8a71791b9048b3f2820b4497909",
-        "sourceKind": "pull-request",
-        "sourceRef": "refs/pull/85115/head",
-        "sourceLabel": "PR #85115",
-        "pullRequestNumber": 85115
-      },
-      "status": "queued",
-      "attempts": 1,
-      "lastAttemptAt": "2026-09-01T12:38:59.659Z",
-      "lastConclusion": "queued"
-    },
-    "9e7d04312d48e081599f55782eb1954b8a0dab68": {
-      "candidate": {
-        "sha": "9e7d04312d48e081599f55782eb1954b8a0dab68",
-        "sourceKind": "pull-request",
-        "sourceRef": "refs/pull/85046/head",
-        "sourceLabel": "PR #85046",
-        "pullRequestNumber": 85046
-      },
-      "status": "queued",
-      "attempts": 1,
-      "lastAttemptAt": "2026-09-01T12:38:59.659Z",
-      "lastConclusion": "queued"
-    },
-    "b60c0c1acd217eb76bc75ba1b082f2cecd159206": {
-      "candidate": {
-        "sha": "b60c0c1acd217eb76bc75ba1b082f2cecd159206",
-        "sourceKind": "pull-request",
-        "sourceRef": "refs/pull/85117/head",
-        "sourceLabel": "PR #85117",
-        "pullRequestNumber": 85117
-      },
-      "status": "queued",
-      "attempts": 1,
-      "lastAttemptAt": "2026-09-01T12:38:59.659Z",
-      "lastConclusion": "queued"
-    }
-  }
+  "updatedAt": "2026-09-01T12:54:45.976Z",
+  "entries": {}
 }
