@@ -44,6 +44,7 @@ interface Manifest {
   readonly byteSize: number;
   readonly sha256: string;
   readonly statistics: CrawlSummary["database"];
+  readonly timings: CrawlSummary["timings"];
 }
 
 function usage(): string {
@@ -200,9 +201,16 @@ async function main(): Promise<void> {
           progress.documentsCompleted === progress.documentCount
           || progress.documentsCompleted % 100 === 0
         ) {
+          const rate = progress.documentsPerSecond.toFixed(
+            progress.documentsPerSecond >= 10 ? 1 : 2
+          );
+          const estimate = progress.documentsCompleted === progress.documentCount
+            ? ""
+            : `, ETA ${formatDuration(progress.estimatedRemainingMilliseconds)}`;
           console.log(
             `Crawled ${progress.documentsCompleted}/${progress.documentCount} `
-            + `documents; latest: ${progress.currentDocument}`
+            + `documents in ${formatDuration(progress.elapsedMilliseconds)} `
+            + `(${rate} docs/s${estimate}); latest: ${progress.currentDocument}`
           );
         }
       }
@@ -233,13 +241,31 @@ async function main(): Promise<void> {
     generationDurationMilliseconds: durationMilliseconds,
     byteSize: stat.size,
     sha256: createHash("sha256").update(bytes).digest("hex"),
-    statistics: summary.database
+    statistics: summary.database,
+    timings: summary.timings
   };
   writeFileSync(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`, "utf8");
   console.log(
     `Indexed ${manifest.statistics.documentCount.toLocaleString()} documents `
     + `and ${manifest.statistics.occurrenceCount.toLocaleString()} occurrences.`
   );
+  console.log("Timings:");
+  console.log(
+    `  Document discovery: ${formatDuration(summary.timings.documentDiscoveryMilliseconds)}`
+  );
+  console.log(
+    `  Server initialization: ${formatDuration(summary.timings.serverInitializationMilliseconds)}`
+  );
+  console.log(
+    `  Index preparation: ${formatDuration(summary.timings.indexPreparationMilliseconds)}`
+  );
+  console.log(
+    `  Workspace load wait: ${formatDuration(summary.timings.workspaceLoadWaitMilliseconds)}`
+  );
+  console.log(
+    `  Document crawl: ${formatDuration(summary.timings.documentCrawlMilliseconds)}`
+  );
+  console.log(`  Total crawl: ${formatDuration(summary.timings.totalMilliseconds)}`);
   console.log(`Manifest: ${manifestPath}`);
 }
 
@@ -290,6 +316,24 @@ function runCapture(
 function isCiEnvironment(): boolean {
   return process.env["GITHUB_ACTIONS"] === "true"
     || process.env["CI"]?.toLowerCase() === "true";
+}
+
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1_000) {
+    return `${Math.round(milliseconds)}ms`;
+  }
+  const totalSeconds = Math.round(milliseconds / 1_000);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${(milliseconds / 1_000).toFixed(1)}s`;
 }
 
 main().catch((error: unknown) => {

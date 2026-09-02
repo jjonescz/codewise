@@ -84,6 +84,11 @@ concise crawl progress and the final index summary. When `CI=true` or
 `GITHUB_ACTIONS=true`, diagnostics are also mirrored to stderr so a failed job
 retains them even if it never reaches artifact upload.
 
+Periodic crawl progress includes elapsed time, document throughput, and an
+estimated remaining time. The final summary reports separate timings for
+document discovery, server initialization, index preparation, workspace-load
+waiting, document crawling, and the complete crawl.
+
 To use another checkout:
 
 ```powershell

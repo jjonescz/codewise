@@ -41,12 +41,29 @@ describe("crawlWorkspace", () => {
         lexicalFallback: false
       };
 
-      const first = await crawlWorkspace(config, databasePath);
+      const progress: Array<{
+        readonly elapsedMilliseconds: number;
+        readonly documentsPerSecond: number;
+        readonly estimatedRemainingMilliseconds: number;
+      }> = [];
+      const first = await crawlWorkspace(config, databasePath, {
+        onProgress: (value) => progress.push(value)
+      });
       expect(first).toMatchObject({
         documentCount: 1,
         requestFailures: 0,
         database: { documentCount: 1, occurrenceCount: 3 }
       });
+      expect(progress.at(-1)).toMatchObject({
+        estimatedRemainingMilliseconds: 0
+      });
+      expect(progress.at(-1)?.elapsedMilliseconds).toBeGreaterThanOrEqual(0);
+      expect(progress.at(-1)?.documentsPerSecond).toBeGreaterThan(0);
+      for (const duration of Object.values(first.timings)) {
+        expect(duration).toBeGreaterThanOrEqual(0);
+      }
+      expect(first.timings.totalMilliseconds)
+        .toBeGreaterThanOrEqual(first.timings.documentCrawlMilliseconds);
       const index = openIndex(databasePath);
       expect(index.references(
         "sample.toy",

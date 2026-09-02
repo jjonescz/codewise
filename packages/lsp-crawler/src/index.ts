@@ -13,7 +13,8 @@ export {
   discoverWorkspaceDocuments,
   type CrawlOptions,
   type CrawlProgress,
-  type CrawlSummary
+  type CrawlSummary,
+  type CrawlTimings
 } from "./crawler.js";
 export {
   CrawlerDatabase,

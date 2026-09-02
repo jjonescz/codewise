@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import { extname, join, relative, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { LspProcessClient, LspResponseError } from "./client.js";
 import type { CrawlerConfig } from "./config.js";
@@ -30,6 +31,18 @@ export interface CrawlProgress {
   readonly documentsCompleted: number;
   readonly documentCount: number;
   readonly currentDocument: string;
+  readonly elapsedMilliseconds: number;
+  readonly documentsPerSecond: number;
+  readonly estimatedRemainingMilliseconds: number;
+}
+
+export interface CrawlTimings {
+  readonly documentDiscoveryMilliseconds: number;
+  readonly serverInitializationMilliseconds: number;
+  readonly indexPreparationMilliseconds: number;
+  readonly workspaceLoadWaitMilliseconds: number;
+  readonly documentCrawlMilliseconds: number;
+  readonly totalMilliseconds: number;
 }
 
 export interface CrawlSummary {
@@ -37,6 +50,7 @@ export interface CrawlSummary {
   readonly documentsCompleted: number;
   readonly requestFailures: number;
   readonly database: ReturnType<CrawlerDatabase["statistics"]>;
+  readonly timings: CrawlTimings;
 }
 
 export interface CrawlOptions {
@@ -68,24 +82,32 @@ export async function crawlWorkspace(
   databasePath: string,
   options: CrawlOptions = {}
 ): Promise<CrawlSummary> {
+  const startedAt = performance.now();
   const onLog = options.onLog ?? (() => undefined);
   const database = new CrawlerDatabase(databasePath);
   const client = new LspProcessClient(config, onLog);
   const failures: Error[] = [];
 
   try {
+    const discoveryStartedAt = performance.now();
     const documents = await discoverWorkspaceDocuments(config);
+    const documentDiscoveryMilliseconds =
+      performance.now() - discoveryStartedAt;
     database.setMetadata("workspace_root", config.workspaceRoot);
     database.setMetadata("server_command", config.server.command);
     database.setMetadata("crawl_started_at", new Date().toISOString());
     database.setMetadata("document_count", String(documents.length));
 
+    const serverInitializationStartedAt = performance.now();
     await client.start();
+    const serverInitializationMilliseconds =
+      performance.now() - serverInitializationStartedAt;
     database.setMetadata(
       "server_info",
       JSON.stringify(client.initializeResult.serverInfo ?? null)
     );
     database.setMetadata("position_encoding", client.positionEncoding);
+    const indexPreparationStartedAt = performance.now();
     const documentInputs = await mapConcurrentValues(
       documents,
       Math.max(config.concurrency, 8),
@@ -100,14 +122,20 @@ export async function crawlWorkspace(
       })
     );
     database.synchronizeDocuments(documentInputs);
+    const indexPreparationMilliseconds =
+      performance.now() - indexPreparationStartedAt;
+    const workspaceLoadStartedAt = performance.now();
     if (!await client.waitForIdle()) {
       onLog(
         `[client] Language server did not report an idle workspace within `
         + `${config.workspaceLoadTimeoutMilliseconds}ms; continuing the crawl.`
       );
     }
+    const workspaceLoadWaitMilliseconds =
+      performance.now() - workspaceLoadStartedAt;
 
     let documentsCompleted = 0;
+    const documentCrawlStartedAt = performance.now();
     await mapConcurrent(documents, config.concurrency, async (document) => {
       try {
         await crawlDocument(client, database, config, document, failures);
@@ -117,20 +145,43 @@ export async function crawlWorkspace(
         onLog(failure.message);
       } finally {
         documentsCompleted++;
+        const elapsedMilliseconds =
+          performance.now() - documentCrawlStartedAt;
+        const documentsPerSecond = elapsedMilliseconds === 0
+          ? 0
+          : documentsCompleted * 1_000 / elapsedMilliseconds;
+        const estimatedRemainingMilliseconds = documentsPerSecond === 0
+          ? 0
+          : (documents.length - documentsCompleted)
+            * 1_000
+            / documentsPerSecond;
         options.onProgress?.({
           documentsCompleted,
           documentCount: documents.length,
-          currentDocument: document.relativePath
+          currentDocument: document.relativePath,
+          elapsedMilliseconds,
+          documentsPerSecond,
+          estimatedRemainingMilliseconds
         });
       }
     });
+    const documentCrawlMilliseconds =
+      performance.now() - documentCrawlStartedAt;
 
     database.setMetadata("crawl_finished_at", new Date().toISOString());
     const summary: CrawlSummary = {
       documentCount: documents.length,
       documentsCompleted,
       requestFailures: failures.length,
-      database: database.statistics()
+      database: database.statistics(),
+      timings: {
+        documentDiscoveryMilliseconds,
+        serverInitializationMilliseconds,
+        indexPreparationMilliseconds,
+        workspaceLoadWaitMilliseconds,
+        documentCrawlMilliseconds,
+        totalMilliseconds: performance.now() - startedAt
+      }
     };
     if (failures.length > 0) {
       throw new AggregateError(
