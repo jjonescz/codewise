@@ -78,6 +78,12 @@ automatically before starting the crawl. It also checks that the current
 `global.json`. A missing SDK is reported once before the language server starts
 or existing index artifacts are replaced.
 
+The command prints the generated `lsp-crawler.log` path before starting.
+Language-server diagnostics are written only to that file; the terminal shows
+concise crawl progress and the final index summary. When `CI=true` or
+`GITHUB_ACTIONS=true`, diagnostics are also mirrored to stderr so a failed job
+retains them even if it never reaches artifact upload.
+
 To use another checkout:
 
 ```powershell

@@ -139,6 +139,7 @@ async function main(): Promise<void> {
   }
 
   const log = createWriteStream(logPath, { encoding: "utf8", flags: "w" });
+  const mirrorServerLogs = isCiEnvironment();
   const config: CrawlerConfig = {
     workspaceRoot: options.roslynRoot,
     server: {
@@ -180,14 +181,18 @@ async function main(): Promise<void> {
   console.log(`Required .NET SDK: ${requiredSdkVersion}`);
   console.log(`Workspace: ${options.roslynRoot}`);
   console.log(`Output: ${databasePath}`);
+  console.log(
+    `Log: ${logPath}${mirrorServerLogs ? " (mirrored to stderr in CI)" : ""}`
+  );
   const startedAt = performance.now();
   let summary: CrawlSummary;
   try {
     summary = await crawlWorkspace(config, databasePath, {
       onLog: (message) => {
-        log.write(`${message}\n`);
-        if (/\b(?:error|exception|fail(?:ed|ure)?|warn(?:ing)?)\b/iu.test(message)) {
-          console.error(message);
+        const line = `${message}\n`;
+        log.write(line);
+        if (mirrorServerLogs) {
+          process.stderr.write(line);
         }
       },
       onProgress: (progress) => {
@@ -280,6 +285,11 @@ function runCapture(
     );
   }
   return result.stdout.trim();
+}
+
+function isCiEnvironment(): boolean {
+  return process.env["GITHUB_ACTIONS"] === "true"
+    || process.env["CI"]?.toLowerCase() === "true";
 }
 
 main().catch((error: unknown) => {
