@@ -73,7 +73,10 @@ npm run index:roslyn
 ```
 
 This command restores the pinned `roslyn-language-server` local tool
-automatically before starting the crawl.
+automatically before starting the crawl. It also checks that the current
+`dotnet` host can see the exact SDK requested by the Roslyn checkout's
+`global.json`. A missing SDK is reported once before the language server starts
+or existing index artifacts are replaced.
 
 To use another checkout:
 

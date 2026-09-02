@@ -18,6 +18,11 @@ import {
   type CrawlerConfig,
   type CrawlSummary
 } from "@codewise/lsp-crawler";
+import {
+  assertRequiredSdkInstalled,
+  parseInstalledSdkVersions,
+  readRequiredSdkVersion
+} from "./sdk-preflight.js";
 
 interface Options {
   readonly roslynRoot: string;
@@ -102,6 +107,16 @@ async function main(): Promise<void> {
     ["-C", options.roslynRoot, "rev-parse", "HEAD"],
     repositoryRoot
   );
+  const globalJsonPath = resolve(options.roslynRoot, "global.json");
+  const requiredSdkVersion = readRequiredSdkVersion(globalJsonPath);
+  const installedSdkVersions = parseInstalledSdkVersions(
+    runCapture("dotnet", ["--list-sdks"], options.roslynRoot)
+  );
+  assertRequiredSdkInstalled(
+    requiredSdkVersion,
+    installedSdkVersions,
+    globalJsonPath
+  );
   const artifactDirectory = resolve(
     repositoryRoot,
     "artifacts",
@@ -162,6 +177,7 @@ async function main(): Promise<void> {
   };
 
   console.log(`Indexing Roslyn commit ${roslynCommit}`);
+  console.log(`Required .NET SDK: ${requiredSdkVersion}`);
   console.log(`Workspace: ${options.roslynRoot}`);
   console.log(`Output: ${databasePath}`);
   const startedAt = performance.now();
