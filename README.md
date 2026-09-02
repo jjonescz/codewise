@@ -56,6 +56,12 @@ acknowledgements can be supplied through `server.requestResponses`; the Roslyn
 configuration acknowledges `razor/updateHtml`. This provides C# information in
 Razor documents but does not run a separate HTML language server.
 
+`requestTimeoutMilliseconds` limits individual LSP requests.
+`workspaceLoadTimeoutMilliseconds` separately controls how long the crawler
+waits for work-done progress to settle before starting. An unfinished progress
+token is advisory: after that timeout the crawler records a warning and
+continues instead of failing the whole index.
+
 ## Generate the local Roslyn index
 
 By default, the command targets `C:\roslyn-3`. It launches the pinned official

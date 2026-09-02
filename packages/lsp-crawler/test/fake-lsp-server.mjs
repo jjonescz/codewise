@@ -7,6 +7,7 @@ if (logPath === undefined) {
 
 let buffer = Buffer.alloc(0);
 let documentUri = "";
+const stuckProgress = process.argv.includes("--stuck-progress");
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
   readMessages();
@@ -50,6 +51,16 @@ function handleMessage(message) {
 
   switch (message.method) {
     case "initialize":
+      if (stuckProgress) {
+        write({
+          jsonrpc: "2.0",
+          method: "$/progress",
+          params: {
+            token: "workspace-load",
+            value: { kind: "begin", title: "Loading workspace" }
+          }
+        });
+      }
       respond(message.id, {
         capabilities: {
           positionEncoding: "utf-16",

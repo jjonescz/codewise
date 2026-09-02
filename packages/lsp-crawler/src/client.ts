@@ -207,21 +207,18 @@ export class LspProcessClient {
     });
   }
 
-  public async waitForIdle(): Promise<void> {
-    const deadline = Date.now() + this.#config.requestTimeoutMilliseconds;
+  public async waitForIdle(): Promise<boolean> {
+    const deadline = Date.now() + this.#config.workspaceLoadTimeoutMilliseconds;
     while (true) {
       const quietFor = Date.now() - this.#lastProgressAt;
       if (
         this.#activeProgress.size === 0
         && quietFor >= this.#config.settleMilliseconds
       ) {
-        return;
+        return true;
       }
       if (Date.now() >= deadline) {
-        throw new Error(
-          `Language server did not become idle within `
-          + `${this.#config.requestTimeoutMilliseconds}ms.`
-        );
+        return false;
       }
       await delay(Math.min(
         100,

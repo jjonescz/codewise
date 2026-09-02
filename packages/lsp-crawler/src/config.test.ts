@@ -25,6 +25,7 @@ describe("loadCrawlerConfig", () => {
         "custom/synchronize": null
       });
       expect(config.concurrency).toBe(4);
+      expect(config.workspaceLoadTimeoutMilliseconds).toBe(300_000);
       expect(config.lexicalFallback).toBe(false);
     } finally {
       await rm(directory, { recursive: true, force: true });

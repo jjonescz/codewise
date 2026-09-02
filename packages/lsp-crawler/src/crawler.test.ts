@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { CodeIndex, type SqlDatabase, type SqlRow, type SqlValue } from "@codewise/index-core";
+import { LspProcessClient } from "./client.js";
 import type { CrawlerConfig } from "./config.js";
 import { crawlWorkspace } from "./crawler.js";
 
@@ -35,6 +36,7 @@ describe("crawlWorkspace", () => {
         documents: [{ languageId: "toy", extensions: [".toy"] }],
         concurrency: 1,
         requestTimeoutMilliseconds: 5_000,
+        workspaceLoadTimeoutMilliseconds: 5_000,
         settleMilliseconds: 0,
         lexicalFallback: false
       };
@@ -68,6 +70,38 @@ describe("crawlWorkspace", () => {
       expect(secondCounts.get("textDocument/hover"))
         .toBe(firstCounts.get("textDocument/hover"));
     } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an unfinished workspace progress token as advisory", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-progress-"));
+    const serverPath = resolve(
+      import.meta.dirname,
+      "../test/fake-lsp-server.mjs"
+    );
+    const config: CrawlerConfig = {
+      workspaceRoot: directory,
+      server: {
+        command: process.execPath,
+        args: [serverPath, join(directory, "server.log"), "--stuck-progress"],
+        cwd: directory,
+        environment: {},
+        requestResponses: {}
+      },
+      documents: [{ languageId: "toy", extensions: [".toy"] }],
+      concurrency: 1,
+      requestTimeoutMilliseconds: 5_000,
+      workspaceLoadTimeoutMilliseconds: 10,
+      settleMilliseconds: 0,
+      lexicalFallback: false
+    };
+    const client = new LspProcessClient(config);
+    try {
+      await client.start();
+      await expect(client.waitForIdle()).resolves.toBe(false);
+    } finally {
+      await client.stop();
       await rm(directory, { recursive: true, force: true });
     }
   });

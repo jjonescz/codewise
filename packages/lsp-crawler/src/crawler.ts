@@ -100,7 +100,12 @@ export async function crawlWorkspace(
       })
     );
     database.synchronizeDocuments(documentInputs);
-    await client.waitForIdle();
+    if (!await client.waitForIdle()) {
+      onLog(
+        `[client] Language server did not report an idle workspace within `
+        + `${config.workspaceLoadTimeoutMilliseconds}ms; continuing the crawl.`
+      );
+    }
 
     let documentsCompleted = 0;
     await mapConcurrent(documents, config.concurrency, async (document) => {

@@ -22,6 +22,7 @@ export interface CrawlerConfig {
   readonly initializationOptions?: unknown;
   readonly concurrency: number;
   readonly requestTimeoutMilliseconds: number;
+  readonly workspaceLoadTimeoutMilliseconds: number;
   readonly settleMilliseconds: number;
   readonly lexicalFallback: boolean;
 }
@@ -78,6 +79,8 @@ export async function loadCrawlerConfig(path: string): Promise<CrawlerConfig> {
     concurrency: optionalInteger(value, "concurrency", 1) ?? 4,
     requestTimeoutMilliseconds:
       optionalInteger(value, "requestTimeoutMilliseconds", 1) ?? 60_000,
+    workspaceLoadTimeoutMilliseconds:
+      optionalInteger(value, "workspaceLoadTimeoutMilliseconds", 1) ?? 300_000,
     settleMilliseconds: optionalInteger(value, "settleMilliseconds", 0) ?? 2_000,
     lexicalFallback: optionalBoolean(value, "lexicalFallback") ?? false,
     ...("initializationOptions" in value

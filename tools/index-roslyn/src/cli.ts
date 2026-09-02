@@ -155,7 +155,8 @@ async function main(): Promise<void> {
       { languageId: "razor", extensions: [".razor", ".cshtml"] }
     ],
     concurrency: options.concurrency,
-    requestTimeoutMilliseconds: 120_000,
+    requestTimeoutMilliseconds: 300_000,
+    workspaceLoadTimeoutMilliseconds: 15 * 60_000,
     settleMilliseconds: 5_000,
     lexicalFallback: false
   };

@@ -19,7 +19,7 @@
     "build:hosted-indexing": "npm run build --workspace @codewise/hosted-indexing",
     "build:extension": "npm run build --workspace codewise-lsp",
     "build": "npm run build:core && npm run build:crawler && npm run build:lsp && npm run build:indexer && npm run build:hosted-indexing && npm run build:extension",
-    "typecheck": "npm run build:core && npm run typecheck --workspace @codewise/lsp-crawler && npm run build:lsp && npm run typecheck --workspace @codewise/index-roslyn && npm run typecheck --workspace @codewise/hosted-indexing && npm run typecheck --workspace codewise-lsp",
+    "typecheck": "npm run build:core && npm run build:crawler && npm run build:lsp && npm run typecheck --workspace @codewise/index-roslyn && npm run typecheck --workspace @codewise/hosted-indexing && npm run typecheck --workspace codewise-lsp",
     "test": "npm run build:core && npm run build:crawler && npm run build:lsp && npm run build:extension && vitest run",
     "test:extension": "npm run build && node tools/run-extension-test.mjs",
     "test:extension:web": "npm run build:core && npm run build:crawler && npm run build:lsp && npm run build:extension && node tools/run-web-extension-test.mjs",
