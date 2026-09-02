@@ -72,6 +72,9 @@ and crawls semantic-token positions including locals:
 npm run index:roslyn
 ```
 
+This command restores the pinned `roslyn-language-server` local tool
+automatically before starting the crawl.
+
 To use another checkout:
 
 ```powershell

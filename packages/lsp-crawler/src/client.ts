@@ -56,6 +56,7 @@ export class LspProcessClient {
   #lastProgressAt = Date.now();
   #stopping = false;
   #fatalError: Error | undefined;
+  readonly #stderrTail: string[] = [];
 
   public constructor(
     config: CrawlerConfig,
@@ -101,6 +102,10 @@ export class LspProcessClient {
     child.stderr.on("data", (chunk: string) => {
       for (const line of chunk.split(/\r?\n/u)) {
         if (line.length > 0) {
+          this.#stderrTail.push(line);
+          if (this.#stderrTail.length > 20) {
+            this.#stderrTail.shift();
+          }
           this.#onLog(`[server] ${line}`);
         }
       }
@@ -111,7 +116,7 @@ export class LspProcessClient {
         this.#breakConnection(
           new Error(
             `Language server exited unexpectedly with code ${String(code)} `
-            + `and signal ${String(signal)}.`
+            + `and signal ${String(signal)}.${this.#stderrDetail()}`
           )
         );
       }
@@ -459,6 +464,12 @@ export class LspProcessClient {
     if (this.#process?.exitCode === null) {
       this.#process.kill();
     }
+  }
+
+  #stderrDetail(): string {
+    return this.#stderrTail.length === 0
+      ? ""
+      : `\nRecent server stderr:\n${this.#stderrTail.join("\n")}`;
   }
 }
 

@@ -105,6 +105,39 @@ describe("crawlWorkspace", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("includes recent server stderr when startup exits", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-exit-"));
+    const serverPath = resolve(
+      import.meta.dirname,
+      "../test/fake-lsp-server.mjs"
+    );
+    const config: CrawlerConfig = {
+      workspaceRoot: directory,
+      server: {
+        command: process.execPath,
+        args: [serverPath, join(directory, "server.log"), "--exit-on-initialize"],
+        cwd: directory,
+        environment: {},
+        requestResponses: {}
+      },
+      documents: [{ languageId: "toy", extensions: [".toy"] }],
+      concurrency: 1,
+      requestTimeoutMilliseconds: 5_000,
+      workspaceLoadTimeoutMilliseconds: 5_000,
+      settleMilliseconds: 0,
+      lexicalFallback: false
+    };
+    const client = new LspProcessClient(config);
+    try {
+      await expect(client.start()).rejects.toThrow(
+        /Recent server stderr:\nFake language server startup failed\./u
+      );
+    } finally {
+      await client.stop().catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 function openIndex(path: string): CodeIndex {

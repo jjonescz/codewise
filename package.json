@@ -24,7 +24,7 @@
     "test:extension": "npm run build && node tools/run-extension-test.mjs",
     "test:extension:web": "npm run build:core && npm run build:crawler && npm run build:lsp && npm run build:extension && node tools/run-web-extension-test.mjs",
     "package:extension:web": "npm run build:core && npm run build:lsp && npm run build:extension && node tools/package-web-extension.mjs",
-    "index:roslyn": "npm run build:core && npm run build:crawler && npm run build:indexer && node tools/index-roslyn/dist/cli.js",
+    "index:roslyn": "npm run build:core && npm run build:crawler && npm run build:indexer && dotnet tool restore && node tools/index-roslyn/dist/cli.js",
     "smoke:roslyn": "node tools/smoke-roslyn-lsp.mjs"
   },
   "devDependencies": {
