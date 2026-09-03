@@ -87,7 +87,9 @@ export async function crawlWorkspace(
   const database = new CrawlerDatabase(databasePath);
   const client = new LspProcessClient(config, onLog);
   const failures: Error[] = [];
+  let completedSuccessfully = false;
 
+  onLog("[crawler] [info] Crawl started.");
   try {
     const discoveryStartedAt = performance.now();
     const documents = await discoverWorkspaceDocuments(config);
@@ -189,12 +191,23 @@ export async function crawlWorkspace(
         `The LSP crawl completed with ${failures.length} failure(s).`
       );
     }
+    completedSuccessfully = true;
     return summary;
   } finally {
-    await client.stop().catch((error) => {
-      onLog(`Failed to stop language server: ${String(error)}`);
-    });
-    database.close();
+    try {
+      await client.stop().catch((error) => {
+        onLog(
+          `[crawler] [error] Failed to stop language server: ${String(error)}`
+        );
+      });
+      database.close();
+    } finally {
+      onLog(
+        completedSuccessfully
+          ? "[crawler] [info] Crawl completed successfully."
+          : "[crawler] [error] Crawl failed."
+      );
+    }
   }
 }
 

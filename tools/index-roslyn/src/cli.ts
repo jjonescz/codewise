@@ -25,6 +25,7 @@ import {
   readRequiredSdkVersion,
   resolveRequiredSdkInstallation
 } from "./sdk-preflight.js";
+import { formatTimestampedLogEntry } from "./timestamped-log.js";
 
 interface Options {
   readonly workspaceRoot: string;
@@ -199,10 +200,10 @@ async function main(): Promise<void> {
   try {
     summary = await crawlWorkspace(config, databasePath, {
       onLog: (message) => {
-        const line = `${message}\n`;
-        log.write(line);
+        const entry = formatTimestampedLogEntry(message);
+        log.write(entry);
         if (mirrorServerLogs) {
-          process.stderr.write(line);
+          process.stderr.write(entry);
         }
       },
       onProgress: (progress) => {

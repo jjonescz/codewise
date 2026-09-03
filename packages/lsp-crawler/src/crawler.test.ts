@@ -46,7 +46,9 @@ describe("crawlWorkspace", () => {
         readonly documentsPerSecond: number;
         readonly estimatedRemainingMilliseconds: number;
       }> = [];
+      const messages: string[] = [];
       const first = await crawlWorkspace(config, databasePath, {
+        onLog: (message) => messages.push(message),
         onProgress: (value) => progress.push(value)
       });
       expect(first).toMatchObject({
@@ -64,6 +66,9 @@ describe("crawlWorkspace", () => {
       }
       expect(first.timings.totalMilliseconds)
         .toBeGreaterThanOrEqual(first.timings.documentCrawlMilliseconds);
+      expect(messages[0]).toBe("[crawler] [info] Crawl started.");
+      expect(messages.at(-1))
+        .toBe("[crawler] [info] Crawl completed successfully.");
       const index = openIndex(databasePath);
       expect(index.references(
         "sample.toy",
@@ -152,6 +157,45 @@ describe("crawlWorkspace", () => {
       );
     } finally {
       await client.stop().catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("logs a terminal failure after language-server startup fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-failure-log-"));
+    try {
+      await writeFile(join(directory, "sample.toy"), "let value = 1;\n");
+      const messages: string[] = [];
+      await expect(crawlWorkspace(
+        {
+          workspaceRoot: directory,
+          server: {
+            command: process.execPath,
+            args: [
+              resolve(
+                import.meta.dirname,
+                "../test/fake-lsp-server.mjs"
+              ),
+              join(directory, "server.log"),
+              "--exit-on-initialize"
+            ],
+            cwd: directory,
+            environment: {},
+            requestResponses: {}
+          },
+          documents: [{ languageId: "toy", extensions: [".toy"] }],
+          concurrency: 1,
+          requestTimeoutMilliseconds: 5_000,
+          workspaceLoadTimeoutMilliseconds: 5_000,
+          settleMilliseconds: 0,
+          lexicalFallback: false
+        },
+        join(directory, "index.db"),
+        { onLog: (message) => messages.push(message) }
+      )).rejects.toThrow("Fake language server startup failed.");
+      expect(messages[0]).toBe("[crawler] [info] Crawl started.");
+      expect(messages.at(-1)).toBe("[crawler] [error] Crawl failed.");
+    } finally {
       await rm(directory, { recursive: true, force: true });
     }
   });
