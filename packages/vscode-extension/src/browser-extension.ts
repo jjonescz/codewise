@@ -22,6 +22,10 @@ import {
   type RemoteHubApi
 } from "./remote-hub-revision.js";
 import { resolveDownloadedRoslynIndex } from "./roslyn-index-provider.js";
+import {
+  missingWorkspaceIndexMessage,
+  workspaceIndexPathSegments
+} from "./workspace-index-paths.js";
 
 interface RunningClient {
   readonly languageClient: LanguageClient;
@@ -259,13 +263,14 @@ async function resolveIndexUri(
     }
   }
 
-  const workspaceIndexUri = vscode.Uri.joinPath(
-    workspaceFolder.uri,
-    ".codewise",
-    "index.db"
-  );
-  if (await fileExists(workspaceIndexUri)) {
-    return workspaceIndexUri;
+  for (const segments of workspaceIndexPathSegments) {
+    const workspaceIndexUri = vscode.Uri.joinPath(
+      workspaceFolder.uri,
+      ...segments
+    );
+    if (await fileExists(workspaceIndexUri)) {
+      return workspaceIndexUri;
+    }
   }
 
   const downloadedIndexUri = await resolveDownloadedRoslynIndex(
@@ -278,10 +283,7 @@ async function resolveIndexUri(
     return downloadedIndexUri;
   }
 
-  await showIndexError(
-    "No code intelligence index was found. Configure codewise.indexPath or add .codewise/index.db to the workspace.",
-    output
-  );
+  await showIndexError(missingWorkspaceIndexMessage, output);
   return undefined;
 }
 

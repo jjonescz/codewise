@@ -125,8 +125,9 @@ npm run test:extension
 Alternatively, use the **Run Codewise on Roslyn** launch configuration and
 select the generated index with **Codewise: Select Index File**.
 
-When no index path is configured and `.codewise\index.db` is absent, opening a
-Roslyn root workspace makes the extension download the retained
+When no index path is configured and neither `.codewise\index.db` nor
+`artifacts\.codewise\index.db` is present, opening a Roslyn root workspace makes
+the extension download the retained
 `roslyn-codewise-<HEAD>` Actions artifact from this repository. GitHub requires
 authentication to download workflow artifacts, so Codewise requests permission
 to use a GitHub session. The artifact manifest is verified before the index is
@@ -135,8 +136,9 @@ cached in extension global storage and used.
 ## VS Code for the Web
 
 The extension manifest includes both desktop and browser entry points. In
-vscode.dev and github.dev, the extension reads `.codewise/index.db` through
-`vscode.workspace.fs` and transfers it to a Web Worker. The desktop server uses
+vscode.dev and github.dev, the extension reads `.codewise/index.db` or
+`artifacts/.codewise/index.db` through `vscode.workspace.fs` and transfers it to
+a Web Worker. The conventional path takes priority. The desktop server uses
 Node's SQLite implementation; the browser worker loads the same database with
 the official SQLite WASM build bundled in the extension.
 The **Codewise: Select Index File** command can select another index exposed by the

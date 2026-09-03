@@ -6,9 +6,10 @@ Code launches the bundled language server over stdio. VS Code for the Web loads
 the same database through SQLite WASM in a Web Worker.
 
 Set `codewise.indexPath` to an absolute desktop path or a workspace URI, or
-place the index at `.codewise/index.db` in the opened workspace. Use **Codewise:
-Select Index File** and **Codewise: Restart Language Server** from the Command
-Palette.
+place the index at `.codewise/index.db` or `artifacts/.codewise/index.db` in the
+opened workspace. The conventional `.codewise` path takes priority over the
+crawler artifact path. Use **Codewise: Select Index File** and **Codewise:
+Restart Language Server** from the Command Palette.
 
 When the setting is empty and the root workspace is a `dotnet/roslyn` checkout,
 the extension downloads the `roslyn-codewise-<HEAD>` GitHub Actions artifact

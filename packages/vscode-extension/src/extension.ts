@@ -9,6 +9,10 @@ import {
 } from "vscode-languageclient/node";
 import { logError, logMessage } from "./extension-logging.js";
 import { resolveDownloadedRoslynIndex } from "./roslyn-index-provider.js";
+import {
+  missingWorkspaceIndexMessage,
+  workspaceIndexPathSegments
+} from "./workspace-index-paths.js";
 
 let client: LanguageClient | undefined;
 
@@ -183,13 +187,14 @@ async function resolveIndexPath(
     return undefined;
   }
 
-  const workspaceIndexUri = vscode.Uri.joinPath(
-    workspaceFolder.uri,
-    ".codewise",
-    "index.db"
-  );
-  if (await fileExists(workspaceIndexUri)) {
-    return workspaceIndexUri.fsPath;
+  for (const segments of workspaceIndexPathSegments) {
+    const workspaceIndexUri = vscode.Uri.joinPath(
+      workspaceFolder.uri,
+      ...segments
+    );
+    if (await fileExists(workspaceIndexUri)) {
+      return workspaceIndexUri.fsPath;
+    }
   }
 
   const downloadedIndexUri = await resolveDownloadedRoslynIndex(
@@ -202,10 +207,7 @@ async function resolveIndexPath(
     return downloadedIndexUri.fsPath;
   }
 
-  await showIndexError(
-    "No code intelligence index was found. Configure codewise.indexPath or add .codewise/index.db to the workspace.",
-    output
-  );
+  await showIndexError(missingWorkspaceIndexMessage, output);
   return undefined;
 }
 

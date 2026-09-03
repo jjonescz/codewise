@@ -56,7 +56,7 @@
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Absolute path or workspace URI to the Codewise SQLite index. When empty, Codewise uses .codewise/index.db or downloads the matching workflow artifact for a Roslyn workspace."
+          "description": "Absolute path or workspace URI to the Codewise SQLite index. When empty, Codewise uses .codewise/index.db, then artifacts/.codewise/index.db, or downloads the matching workflow artifact for a Roslyn workspace."
         },
         "codewise.roslynCommit": {
           "type": "string",
