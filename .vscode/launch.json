@@ -2,12 +2,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Codewise on Roslyn",
+      "name": "Run Codewise",
       "type": "extensionHost",
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}/packages/vscode-extension",
-        "C:\\roslyn-3"
       ],
       "outFiles": [
         "${workspaceFolder}/packages/vscode-extension/dist/**/*.js",
