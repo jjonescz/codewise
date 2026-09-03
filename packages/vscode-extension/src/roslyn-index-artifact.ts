@@ -82,14 +82,20 @@ export async function verifyRoslynIndex(
     );
   }
 
-  if (!isRecord(manifest) || manifest["schemaVersion"] !== 2) {
+  if (
+    !isRecord(manifest)
+    || (manifest["schemaVersion"] !== 2 && manifest["schemaVersion"] !== 3)
+  ) {
     throw new RoslynIndexValidationError(
       "The Roslyn Codewise manifest has an unsupported schema version."
     );
   }
-  if (manifest["roslynCommit"] !== expectedCommit) {
+  const indexedCommit = manifest["schemaVersion"] === 2
+    ? manifest["roslynCommit"]
+    : manifest["repositoryCommit"];
+  if (indexedCommit !== expectedCommit) {
     throw new RoslynIndexValidationError(
-      `The Roslyn Codewise manifest targets ${String(manifest["roslynCommit"])}, not ${expectedCommit}.`
+      `The Roslyn Codewise manifest targets ${String(indexedCommit)}, not ${expectedCommit}.`
     );
   }
 

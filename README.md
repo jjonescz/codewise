@@ -64,12 +64,12 @@ continues instead of failing the whole index.
 
 ## Generate the local Roslyn index
 
-By default, the command targets `C:\roslyn-3`. It launches the pinned official
-`roslyn-language-server`, opens C#, Visual Basic, Razor, and CSHTML documents,
-and crawls semantic-token positions including locals:
+Pass the workspace root to launch the pinned official
+`roslyn-language-server`, open C#, Visual Basic, Razor, and CSHTML documents,
+and crawl semantic-token positions including locals:
 
 ```powershell
-npm run index:roslyn
+npm run index:roslyn -- --workspace-root C:\path\to\roslyn
 ```
 
 This command restores the pinned `roslyn-language-server` local tool
@@ -89,16 +89,10 @@ estimated remaining time. The final summary reports separate timings for
 document discovery, server initialization, index preparation, workspace-load
 waiting, document crawling, and the complete crawl.
 
-To use another checkout:
-
-```powershell
-npm run index:roslyn -- --roslyn-root C:\path\to\roslyn
-```
-
 The crawler covers the full workspace loaded by Roslyn rather than invoking a
-language-specific batch indexer. Generated databases, logs, and manifests are
-written below
-`artifacts\roslyn\<commit>\` and are ignored by version control.
+language-specific batch indexer. By default, the database, log, and manifest are
+written below the workspace's `artifacts\.codewise\` directory. Passing
+`--database` places the log and manifest beside the selected database.
 
 ## Run the standalone language server
 

@@ -43,10 +43,10 @@ export function assertRequiredSdkInstalled(
     ? "  (none)"
     : installedVersions.map((version) => `  ${version}`).join("\n");
   throw new Error(
-    `Roslyn requires .NET SDK ${requiredVersion} from ${globalJsonPath}, `
+    `The workspace requires .NET SDK ${requiredVersion} from ${globalJsonPath}, `
     + "but that exact SDK is not installed for the current dotnet host.\n\n"
     + `Installed SDKs:\n${installed}\n\n`
-    + `Install .NET SDK ${requiredVersion} before indexing Roslyn.`
+    + `Install .NET SDK ${requiredVersion} before indexing the workspace.`
   );
 }
 

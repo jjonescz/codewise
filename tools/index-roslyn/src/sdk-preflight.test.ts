@@ -4,9 +4,9 @@ import {
   parseInstalledSdkVersions
 } from "./sdk-preflight.js";
 
-const globalJsonPath = "C:\\roslyn\\global.json";
+const globalJsonPath = "C:\\workspace\\global.json";
 
-describe("Roslyn SDK preflight", () => {
+describe("workspace SDK preflight", () => {
   it("accepts the exact SDK requested by global.json", () => {
     const installed = parseInstalledSdkVersions([
       "10.0.303 [C:\\dotnet\\sdk]",

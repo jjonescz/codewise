@@ -18,13 +18,24 @@ describe("extractVerifiedRoslynIndex", () => {
 
     expect(result.index).toEqual(index);
     expect(JSON.parse(new TextDecoder().decode(result.manifest))).toMatchObject({
-      schemaVersion: 2,
-      roslynCommit: commit,
+      schemaVersion: 3,
+      repositoryCommit: commit,
       byteSize: index.byteLength
     });
   });
 
-  it("rejects an index produced for a different Roslyn commit", async () => {
+  it("accepts a legacy schema version 2 manifest", async () => {
+    const index = encoder.encode("legacy SQLite bytes");
+    const artifact = wrapBundle(createTar({
+      "index.db": index,
+      "manifest.json": createManifest(index, commit, 2)
+    }));
+
+    await expect(extractVerifiedRoslynIndex(artifact, commit))
+      .resolves.toMatchObject({ index });
+  });
+
+  it("rejects an index produced for a different repository commit", async () => {
     const artifact = createArtifact(
       encoder.encode("valid SQLite bytes"),
       "1111111111111111111111111111111111111111"
@@ -50,17 +61,26 @@ describe("extractVerifiedRoslynIndex", () => {
   });
 });
 
-function createArtifact(index: Uint8Array, roslynCommit: string): Uint8Array {
+function createArtifact(
+  index: Uint8Array,
+  repositoryCommit: string
+): Uint8Array {
   return wrapBundle(createTar({
     "index.db": index,
-    "manifest.json": createManifest(index, roslynCommit)
+    "manifest.json": createManifest(index, repositoryCommit)
   }));
 }
 
-function createManifest(index: Uint8Array, roslynCommit: string): Uint8Array {
+function createManifest(
+  index: Uint8Array,
+  repositoryCommit: string,
+  schemaVersion: 2 | 3 = 3
+): Uint8Array {
   return encoder.encode(JSON.stringify({
-    schemaVersion: 2,
-    roslynCommit,
+    schemaVersion,
+    ...(schemaVersion === 2
+      ? { roslynCommit: repositoryCommit }
+      : { repositoryCommit }),
     byteSize: index.byteLength,
     sha256: createHash("sha256").update(index).digest("hex")
   }));

@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ import {
   type CrawlerConfig,
   type CrawlSummary
 } from "@codewise/lsp-crawler";
+import { resolveIndexOutputPaths } from "./output-paths.js";
 import {
   assertRequiredSdkInstalled,
   parseInstalledSdkVersions,
@@ -25,14 +26,14 @@ import {
 } from "./sdk-preflight.js";
 
 interface Options {
-  readonly roslynRoot: string;
+  readonly workspaceRoot: string;
   readonly databasePath?: string;
   readonly concurrency: number;
 }
 
 interface Manifest {
-  readonly schemaVersion: 2;
-  readonly roslynCommit: string;
+  readonly schemaVersion: 3;
+  readonly repositoryCommit: string;
   readonly repositoryRoot: string;
   readonly indexedWorkspace: ".";
   readonly indexer: {
@@ -52,16 +53,15 @@ function usage(): string {
     "Usage: codewise-index-roslyn [options]",
     "",
     "Options:",
-    "  --roslyn-root <path>   Roslyn checkout root (default: C:\\roslyn-3 on Windows)",
-    "  --database <path>      Output database path",
-    "  --concurrency <number> Concurrent document crawls (default: 4)",
-    "  --help                 Show this help"
+    "  --workspace-root <path> Workspace root (or set WORKSPACE_ROOT)",
+    "  --database <path>       Output database path",
+    "  --concurrency <number>  Concurrent document crawls (default: 4)",
+    "  --help                  Show this help"
   ].join("\n");
 }
 
 function parseOptions(args: readonly string[]): Options {
-  let roslynRoot = process.env["ROSLYN_ROOT"]
-    ?? (process.platform === "win32" ? "C:\\roslyn-3" : resolve("../roslyn"));
+  let workspaceRoot = process.env["WORKSPACE_ROOT"];
   let databasePath: string | undefined;
   let concurrency = 4;
 
@@ -73,8 +73,8 @@ function parseOptions(args: readonly string[]): Options {
         console.log(usage());
         process.exit(0);
         break;
-      case "--roslyn-root":
-        roslynRoot = requireValue(args, ++index, argument);
+      case "--workspace-root":
+        workspaceRoot = requireValue(args, ++index, argument);
         break;
       case "--database":
         databasePath = requireValue(args, ++index, argument);
@@ -90,8 +90,13 @@ function parseOptions(args: readonly string[]): Options {
     }
   }
 
+  if (workspaceRoot === undefined || workspaceRoot.trim() === "") {
+    throw new Error(
+      `--workspace-root is required unless WORKSPACE_ROOT is set.\n\n${usage()}`
+    );
+  }
   return {
-    roslynRoot: resolve(roslynRoot),
+    workspaceRoot: resolve(workspaceRoot),
     concurrency,
     ...(databasePath === undefined
       ? {}
@@ -103,32 +108,26 @@ async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
   const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
   statSync(resolve(repositoryRoot, ".config", "dotnet-tools.json"));
-  const roslynCommit = runCapture(
+  const workspaceCommit = runCapture(
     "git",
-    ["-C", options.roslynRoot, "rev-parse", "HEAD"],
+    ["-C", options.workspaceRoot, "rev-parse", "HEAD"],
     repositoryRoot
   );
-  const globalJsonPath = resolve(options.roslynRoot, "global.json");
+  const globalJsonPath = resolve(options.workspaceRoot, "global.json");
   const requiredSdkVersion = readRequiredSdkVersion(globalJsonPath);
   const installedSdkVersions = parseInstalledSdkVersions(
-    runCapture("dotnet", ["--list-sdks"], options.roslynRoot)
+    runCapture("dotnet", ["--list-sdks"], options.workspaceRoot)
   );
   assertRequiredSdkInstalled(
     requiredSdkVersion,
     installedSdkVersions,
     globalJsonPath
   );
-  const artifactDirectory = resolve(
-    repositoryRoot,
-    "artifacts",
-    "roslyn",
-    roslynCommit
+  const { databasePath, logPath, manifestPath } = resolveIndexOutputPaths(
+    options.workspaceRoot,
+    options.databasePath
   );
-  const databasePath = options.databasePath
-    ?? resolve(artifactDirectory, "index.db");
-  const logPath = resolve(artifactDirectory, "lsp-crawler.log");
-  const manifestPath = resolve(artifactDirectory, "manifest.json");
-  mkdirSync(artifactDirectory, { recursive: true });
+  mkdirSync(dirname(databasePath), { recursive: true });
   for (const path of [
     databasePath,
     `${databasePath}-shm`,
@@ -142,7 +141,7 @@ async function main(): Promise<void> {
   const log = createWriteStream(logPath, { encoding: "utf8", flags: "w" });
   const mirrorServerLogs = isCiEnvironment();
   const config: CrawlerConfig = {
-    workspaceRoot: options.roslynRoot,
+    workspaceRoot: options.workspaceRoot,
     server: {
       command: "dotnet",
       args: [
@@ -178,9 +177,9 @@ async function main(): Promise<void> {
     lexicalFallback: false
   };
 
-  console.log(`Indexing Roslyn commit ${roslynCommit}`);
+  console.log(`Indexing commit ${workspaceCommit}`);
   console.log(`Required .NET SDK: ${requiredSdkVersion}`);
-  console.log(`Workspace: ${options.roslynRoot}`);
+  console.log(`Workspace: ${options.workspaceRoot}`);
   console.log(`Output: ${databasePath}`);
   console.log(
     `Log: ${logPath}${mirrorServerLogs ? " (mirrored to stderr in CI)" : ""}`
@@ -229,9 +228,9 @@ async function main(): Promise<void> {
   }
   const bytes = readFileSync(databasePath);
   const manifest: Manifest = {
-    schemaVersion: 2,
-    roslynCommit,
-    repositoryRoot: options.roslynRoot,
+    schemaVersion: 3,
+    repositoryCommit: workspaceCommit,
+    repositoryRoot: options.workspaceRoot,
     indexedWorkspace: ".",
     indexer: {
       name: "codewise-lsp-crawler",

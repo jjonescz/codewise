@@ -129,7 +129,8 @@ jobs:
         run: |
           set -euo pipefail
           node tools/index-roslyn/dist/cli.js \
-            --roslyn-root "$GITHUB_WORKSPACE/roslyn"
+            --workspace-root "$GITHUB_WORKSPACE/roslyn" \
+            --database "$GITHUB_WORKSPACE/codewise/artifacts/roslyn/$ROSLYN_SHA/index.db"
 
           artifact_directory="$GITHUB_WORKSPACE/codewise/artifacts/roslyn/$ROSLYN_SHA"
           test -s "$artifact_directory/index.db"
