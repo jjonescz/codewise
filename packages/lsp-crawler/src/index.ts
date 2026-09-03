@@ -1,6 +1,7 @@
 export {
   LspProcessClient,
-  LspResponseError
+  LspResponseError,
+  type LspRequestStatistics
 } from "./client.js";
 export {
   loadCrawlerConfig,
@@ -11,6 +12,7 @@ export {
 export {
   crawlWorkspace,
   discoverWorkspaceDocuments,
+  CrawlError,
   type CrawlOptions,
   type CrawlProgress,
   type CrawlSummary,

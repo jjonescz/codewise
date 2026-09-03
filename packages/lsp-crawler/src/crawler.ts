@@ -4,7 +4,11 @@ import { readdir, readFile } from "node:fs/promises";
 import { extname, join, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
-import { LspProcessClient, LspResponseError } from "./client.js";
+import {
+  LspProcessClient,
+  LspResponseError,
+  type LspRequestStatistics
+} from "./client.js";
 import type { CrawlerConfig } from "./config.js";
 import {
   CrawlerDatabase,
@@ -41,6 +45,8 @@ export interface CrawlTimings {
   readonly serverInitializationMilliseconds: number;
   readonly indexPreparationMilliseconds: number;
   readonly workspaceLoadWaitMilliseconds: number;
+  readonly candidateDiscoveryMilliseconds: number;
+  readonly occurrenceProbeMilliseconds: number;
   readonly documentCrawlMilliseconds: number;
   readonly totalMilliseconds: number;
 }
@@ -49,8 +55,23 @@ export interface CrawlSummary {
   readonly documentCount: number;
   readonly documentsCompleted: number;
   readonly requestFailures: number;
+  readonly recoveredRequestFailures: number;
+  readonly requestStatistics: readonly LspRequestStatistics[];
   readonly database: ReturnType<CrawlerDatabase["statistics"]>;
   readonly timings: CrawlTimings;
+}
+
+export class CrawlError extends AggregateError {
+  public constructor(
+    errors: readonly Error[],
+    public readonly summary: CrawlSummary
+  ) {
+    super(
+      errors,
+      `The LSP crawl completed with ${errors.length} failure(s).`
+    );
+    this.name = "CrawlError";
+  }
 }
 
 export interface CrawlOptions {
@@ -71,6 +92,22 @@ interface WorkspaceDocument {
   readonly languageId: string;
 }
 
+interface PreparedDocument {
+  readonly document: WorkspaceDocument;
+  readonly uri: string;
+  readonly recordId: number;
+  readonly occurrenceCount: number;
+}
+
+interface DocumentWork {
+  readonly document: WorkspaceDocument;
+  readonly prepared?: PreparedDocument;
+}
+
+interface CrawlCounters {
+  recoveredRequestFailures: number;
+}
+
 const ignoredDirectories = new Set([
   ".git", ".idea", ".vs", "bin", "node_modules", "obj"
 ]);
@@ -87,6 +124,7 @@ export async function crawlWorkspace(
   const database = new CrawlerDatabase(databasePath);
   const client = new LspProcessClient(config, onLog);
   const failures: Error[] = [];
+  const counters: CrawlCounters = { recoveredRequestFailures: 0 };
   let completedSuccessfully = false;
 
   onLog("[crawler] [info] Crawl started.");
@@ -136,19 +174,68 @@ export async function crawlWorkspace(
     const workspaceLoadWaitMilliseconds =
       performance.now() - workspaceLoadStartedAt;
 
-    let documentsCompleted = 0;
     const documentCrawlStartedAt = performance.now();
-    await mapConcurrent(documents, config.concurrency, async (document) => {
+    const candidateDiscoveryStartedAt = performance.now();
+    const work = await mapConcurrentValues(
+      documents,
+      config.concurrency,
+      async (document): Promise<DocumentWork> => {
+        try {
+          return {
+            document,
+            prepared: await discoverDocumentCandidates(
+              client,
+              database,
+              config,
+              document,
+              failures
+            )
+          };
+        } catch (error) {
+          const failure = requestFailure(
+            "candidate discovery",
+            document.relativePath,
+            error
+          );
+          failures.push(failure);
+          onLog(failure.message);
+          return { document };
+        }
+      }
+    );
+    const candidateDiscoveryMilliseconds =
+      performance.now() - candidateDiscoveryStartedAt;
+    const prioritizedWork = [...work].sort((left, right) => (
+      (right.prepared?.occurrenceCount ?? -1)
+      - (left.prepared?.occurrenceCount ?? -1)
+      || left.document.relativePath.localeCompare(right.document.relativePath)
+    ));
+
+    let documentsCompleted = 0;
+    const occurrenceProbeStartedAt = performance.now();
+    await mapConcurrent(prioritizedWork, config.concurrency, async (documentWork) => {
       try {
-        await crawlDocument(client, database, config, document, failures);
+        if (documentWork.prepared !== undefined) {
+          await probeDocument(
+            client,
+            database,
+            documentWork.prepared,
+            failures,
+            counters
+          );
+        }
       } catch (error) {
-        const failure = requestFailure("crawl", document.relativePath, error);
+        const failure = requestFailure(
+          "occurrence probing",
+          documentWork.document.relativePath,
+          error
+        );
         failures.push(failure);
         onLog(failure.message);
       } finally {
         documentsCompleted++;
         const elapsedMilliseconds =
-          performance.now() - documentCrawlStartedAt;
+          performance.now() - occurrenceProbeStartedAt;
         const documentsPerSecond = elapsedMilliseconds === 0
           ? 0
           : documentsCompleted * 1_000 / elapsedMilliseconds;
@@ -160,13 +247,15 @@ export async function crawlWorkspace(
         options.onProgress?.({
           documentsCompleted,
           documentCount: documents.length,
-          currentDocument: document.relativePath,
+          currentDocument: documentWork.document.relativePath,
           elapsedMilliseconds,
           documentsPerSecond,
           estimatedRemainingMilliseconds
         });
       }
     });
+    const occurrenceProbeMilliseconds =
+      performance.now() - occurrenceProbeStartedAt;
     const documentCrawlMilliseconds =
       performance.now() - documentCrawlStartedAt;
 
@@ -175,21 +264,22 @@ export async function crawlWorkspace(
       documentCount: documents.length,
       documentsCompleted,
       requestFailures: failures.length,
+      recoveredRequestFailures: counters.recoveredRequestFailures,
+      requestStatistics: client.requestStatistics(),
       database: database.statistics(),
       timings: {
         documentDiscoveryMilliseconds,
         serverInitializationMilliseconds,
         indexPreparationMilliseconds,
         workspaceLoadWaitMilliseconds,
+        candidateDiscoveryMilliseconds,
+        occurrenceProbeMilliseconds,
         documentCrawlMilliseconds,
         totalMilliseconds: performance.now() - startedAt
       }
     };
     if (failures.length > 0) {
-      throw new AggregateError(
-        failures,
-        `The LSP crawl completed with ${failures.length} failure(s).`
-      );
+      throw new CrawlError(failures, summary);
     }
     completedSuccessfully = true;
     return summary;
@@ -211,13 +301,13 @@ export async function crawlWorkspace(
   }
 }
 
-async function crawlDocument(
+async function discoverDocumentCandidates(
   client: LspProcessClient,
   database: CrawlerDatabase,
   config: CrawlerConfig,
   document: WorkspaceDocument,
   failures: Error[]
-): Promise<void> {
+): Promise<PreparedDocument> {
   const content = await readFile(document.absolutePath, "utf8");
   const uri = pathToFileURL(document.absolutePath).href;
   const mapper = new TextCoordinateMapper(content, client.positionEncoding);
@@ -259,18 +349,50 @@ async function crawlDocument(
           : { semanticModifiers: candidate.semanticModifiers })
       });
     }
-    for (const occurrence of database.listOccurrences(record.id)) {
+    return {
+      document,
+      uri,
+      recordId: record.id,
+      occurrenceCount: database.listOccurrences(record.id).length
+    };
+  } finally {
+    client.notify("textDocument/didClose", { textDocument: { uri } });
+  }
+}
+
+async function probeDocument(
+  client: LspProcessClient,
+  database: CrawlerDatabase,
+  prepared: PreparedDocument,
+  failures: Error[],
+  counters: CrawlCounters
+): Promise<void> {
+  const content = await readFile(prepared.document.absolutePath, "utf8");
+  client.notify("textDocument/didOpen", {
+    textDocument: {
+      uri: prepared.uri,
+      languageId: prepared.document.languageId,
+      version: 1,
+      text: content
+    }
+  });
+  try {
+    for (const occurrence of database.listOccurrences(prepared.recordId)) {
       await probeOccurrence(
         client,
         database,
-        uri,
+        prepared.uri,
+        prepared.document.languageId,
         occurrence.id,
         occurrence.range.start,
-        failures
+        failures,
+        counters
       );
     }
   } finally {
-    client.notify("textDocument/didClose", { textDocument: { uri } });
+    client.notify("textDocument/didClose", {
+      textDocument: { uri: prepared.uri }
+    });
   }
 }
 
@@ -486,15 +608,16 @@ async function probeOccurrence(
   client: LspProcessClient,
   database: CrawlerDatabase,
   uri: string,
+  languageId: string,
   occurrenceId: number,
   position: Position,
-  failures: Error[]
+  failures: Error[],
+  counters: CrawlCounters
 ): Promise<void> {
   const methods: readonly [LocationAnswerKind, string][] = [
     ["references", "textDocument/references"],
     ["definition", "textDocument/definition"],
-    ["declaration", "textDocument/declaration"],
-    ["highlights", "textDocument/documentHighlight"]
+    ["declaration", "textDocument/declaration"]
   ];
   for (const [kind, method] of methods) {
     if (!client.supports(method) || database.hasCompleteAnswer(occurrenceId, kind)) {
@@ -511,14 +634,52 @@ async function probeOccurrence(
       database.saveLocationAnswer(
         occurrenceId,
         kind,
-        kind === "highlights" ? parseHighlights(value, uri) : parseLocations(value)
+        parseLocations(value)
       );
     } catch (error) {
       if (error instanceof LspResponseError && error.code === methodNotFound) {
         continue;
       }
+      if (
+        kind === "references"
+        && languageId === "razor"
+        && isRazorNamespaceReferenceFailure(error)
+      ) {
+        database.saveLocationAnswer(occurrenceId, kind, []);
+        counters.recoveredRequestFailures++;
+        continue;
+      }
       database.saveAnswerError(occurrenceId, kind, error);
       failures.push(requestFailure(method, uri, error, position));
+    }
+  }
+
+  if (
+    client.supports("textDocument/documentHighlight")
+    && !database.hasCompleteAnswer(occurrenceId, "highlights")
+    && !database.saveHighlightsFromReferences(occurrenceId, uri)
+  ) {
+    try {
+      const value = await requestWithRetry<unknown>(
+        client,
+        "textDocument/documentHighlight",
+        { textDocument: { uri }, position }
+      );
+      database.saveLocationAnswer(
+        occurrenceId,
+        "highlights",
+        parseHighlights(value, uri)
+      );
+    } catch (error) {
+      if (!(error instanceof LspResponseError) || error.code !== methodNotFound) {
+        database.saveAnswerError(occurrenceId, "highlights", error);
+        failures.push(requestFailure(
+          "textDocument/documentHighlight",
+          uri,
+          error,
+          position
+        ));
+      }
     }
   }
 
@@ -543,6 +704,12 @@ async function probeOccurrence(
       }
     }
   }
+}
+
+function isRazorNamespaceReferenceFailure(error: unknown): boolean {
+  return error instanceof LspResponseError
+    && error.code === -32000
+    && error.message.includes("'symbol' cannot be a namespace");
 }
 
 function parseLocations(value: unknown): readonly Location[] {

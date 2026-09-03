@@ -14,9 +14,27 @@ const internalError = -32603;
 
 interface PendingRequest {
   readonly method: string;
+  readonly startedAt: number;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
   readonly timer: NodeJS.Timeout;
+}
+
+interface RequestAccumulator {
+  succeeded: number;
+  failed: number;
+  readonly durations: number[];
+}
+
+export interface LspRequestStatistics {
+  readonly method: string;
+  readonly requestCount: number;
+  readonly succeeded: number;
+  readonly failed: number;
+  readonly totalDurationMilliseconds: number;
+  readonly averageDurationMilliseconds: number;
+  readonly p95DurationMilliseconds: number;
+  readonly maximumDurationMilliseconds: number;
 }
 
 interface JsonRpcMessage {
@@ -49,6 +67,7 @@ export class LspProcessClient {
   readonly #pending = new Map<number, PendingRequest>();
   readonly #dynamicRegistrations = new Map<string, unknown>();
   readonly #activeProgress = new Set<string>();
+  readonly #requestStatistics = new Map<string, RequestAccumulator>();
   #process: ChildProcessWithoutNullStreams | undefined;
   #buffer = Buffer.alloc(0);
   #nextId = 1;
@@ -175,15 +194,49 @@ export class LspProcessClient {
       ?? this.initializeResult.capabilities["semanticTokensProvider"];
   }
 
+  public requestStatistics(): readonly LspRequestStatistics[] {
+    return [...this.#requestStatistics.entries()]
+      .map(([method, accumulator]) => {
+        const durations = [...accumulator.durations].sort((left, right) => left - right);
+        const requestCount = durations.length;
+        const totalDurationMilliseconds = durations.reduce(
+          (total, duration) => total + duration,
+          0
+        );
+        return {
+          method,
+          requestCount,
+          succeeded: accumulator.succeeded,
+          failed: accumulator.failed,
+          totalDurationMilliseconds,
+          averageDurationMilliseconds: requestCount === 0
+            ? 0
+            : totalDurationMilliseconds / requestCount,
+          p95DurationMilliseconds: percentile(durations, 0.95),
+          maximumDurationMilliseconds: durations.at(-1) ?? 0
+        };
+      })
+      .sort((left, right) => (
+        right.totalDurationMilliseconds - left.totalDurationMilliseconds
+        || left.method.localeCompare(right.method)
+      ));
+  }
+
   public request<T>(method: string, params?: unknown): Promise<T> {
     if (this.#fatalError !== undefined) {
       return Promise.reject(this.#fatalError);
     }
     const process = this.#requireProcess();
     const id = this.#nextId++;
+    const startedAt = Date.now();
     return new Promise<T>((resolveRequest, reject) => {
       const timer = setTimeout(() => {
+        const pending = this.#pending.get(id);
+        if (pending === undefined) {
+          return;
+        }
         this.#pending.delete(id);
+        this.#recordRequest(pending, false);
         reject(new Error(
           `Language server request ${method} timed out after `
           + `${this.#config.requestTimeoutMilliseconds}ms.`
@@ -191,6 +244,7 @@ export class LspProcessClient {
       }, this.#config.requestTimeoutMilliseconds);
       this.#pending.set(id, {
         method,
+        startedAt,
         resolve: (value) => resolveRequest(value as T),
         reject,
         timer
@@ -329,6 +383,7 @@ export class LspProcessClient {
     }
     clearTimeout(pending.timer);
     this.#pending.delete(message.id);
+    this.#recordRequest(pending, message.error === undefined);
     if (message.error !== undefined) {
       pending.reject(new LspResponseError(
         message.error.code,
@@ -449,9 +504,25 @@ export class LspProcessClient {
   #failPending(error: Error): void {
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
+      this.#recordRequest(pending, false);
       pending.reject(error);
     }
     this.#pending.clear();
+  }
+
+  #recordRequest(pending: PendingRequest, succeeded: boolean): void {
+    const accumulator = this.#requestStatistics.get(pending.method) ?? {
+      succeeded: 0,
+      failed: 0,
+      durations: []
+    };
+    if (succeeded) {
+      accumulator.succeeded++;
+    } else {
+      accumulator.failed++;
+    }
+    accumulator.durations.push(Date.now() - pending.startedAt);
+    this.#requestStatistics.set(pending.method, accumulator);
   }
 
   #breakConnection(error: Error): void {
@@ -471,6 +542,17 @@ export class LspProcessClient {
       ? ""
       : `\nRecent server stderr:\n${this.#stderrTail.join("\n")}`;
   }
+}
+
+function percentile(sortedValues: readonly number[], percentileValue: number): number {
+  if (sortedValues.length === 0) {
+    return 0;
+  }
+  const index = Math.max(
+    0,
+    Math.ceil(sortedValues.length * percentileValue) - 1
+  );
+  return sortedValues[index]!;
 }
 
 function clientCapabilities(): Record<string, unknown> {

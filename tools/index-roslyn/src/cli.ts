@@ -14,6 +14,7 @@ import { performance } from "node:perf_hooks";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
+  CrawlError,
   crawlWorkspace,
   type CrawlerConfig,
   type CrawlSummary
@@ -48,6 +49,8 @@ interface Manifest {
   readonly sha256: string;
   readonly statistics: CrawlSummary["database"];
   readonly timings: CrawlSummary["timings"];
+  readonly recoveredRequestFailures: number;
+  readonly requestStatistics: CrawlSummary["requestStatistics"];
 }
 
 function usage(): string {
@@ -57,7 +60,7 @@ function usage(): string {
     "Options:",
     "  --workspace-root <path> Workspace root (or set WORKSPACE_ROOT)",
     "  --database <path>       Output database path",
-    "  --concurrency <number>  Concurrent document crawls (default: 4)",
+    "  --concurrency <number>  Concurrent document crawls (default: 8)",
     "  --help                  Show this help"
   ].join("\n");
 }
@@ -65,7 +68,7 @@ function usage(): string {
 function parseOptions(args: readonly string[]): Options {
   let workspaceRoot = process.env["WORKSPACE_ROOT"];
   let databasePath: string | undefined;
-  let concurrency = 4;
+  let concurrency = 8;
 
   for (let index = 0; index < args.length; index++) {
     const argument = args[index]!;
@@ -174,7 +177,10 @@ async function main(): Promise<void> {
         DOTNET_NOLOGO: "1"
       },
       requestResponses: {
-        "razor/updateHtml": null
+        "razor/updateHtml": null,
+        "textDocument/definition": null,
+        "textDocument/documentHighlight": null,
+        "textDocument/hover": null
       }
     },
     documents: [
@@ -227,6 +233,12 @@ async function main(): Promise<void> {
         }
       }
     });
+  } catch (error) {
+    if (error instanceof CrawlError) {
+      console.error("Partial crawl performance:");
+      printCrawlPerformance(error.summary);
+    }
+    throw error;
   } finally {
     await new Promise<void>((resolveLog, reject) => {
       log.once("error", reject);
@@ -254,12 +266,23 @@ async function main(): Promise<void> {
     byteSize: stat.size,
     sha256: createHash("sha256").update(bytes).digest("hex"),
     statistics: summary.database,
-    timings: summary.timings
+    timings: summary.timings,
+    recoveredRequestFailures: summary.recoveredRequestFailures,
+    requestStatistics: summary.requestStatistics
   };
   writeFileSync(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`, "utf8");
   console.log(
     `Indexed ${manifest.statistics.documentCount.toLocaleString()} documents `
     + `and ${manifest.statistics.occurrenceCount.toLocaleString()} occurrences.`
+  );
+  printCrawlPerformance(summary);
+  console.log(`Manifest: ${manifestPath}`);
+}
+
+function printCrawlPerformance(summary: CrawlSummary): void {
+  console.log(
+    `Request failures: ${summary.requestFailures.toLocaleString()} crawl failure(s), `
+    + `${summary.recoveredRequestFailures.toLocaleString()} recovered`
   );
   console.log("Timings:");
   console.log(
@@ -275,10 +298,26 @@ async function main(): Promise<void> {
     `  Workspace load wait: ${formatDuration(summary.timings.workspaceLoadWaitMilliseconds)}`
   );
   console.log(
-    `  Document crawl: ${formatDuration(summary.timings.documentCrawlMilliseconds)}`
+    `  Candidate discovery: ${formatDuration(summary.timings.candidateDiscoveryMilliseconds)}`
   );
+  console.log(
+    `  Occurrence probing: ${formatDuration(summary.timings.occurrenceProbeMilliseconds)}`
+  );
+  console.log(`  Document crawl: ${formatDuration(summary.timings.documentCrawlMilliseconds)}`);
   console.log(`  Total crawl: ${formatDuration(summary.timings.totalMilliseconds)}`);
-  console.log(`Manifest: ${manifestPath}`);
+  console.log("LSP requests (sorted by cumulative latency):");
+  for (const request of summary.requestStatistics) {
+    const failures = request.failed === 0
+      ? ""
+      : `, ${request.failed.toLocaleString()} error response(s)`;
+    console.log(
+      `  ${request.method}: ${request.requestCount.toLocaleString()} request(s)`
+      + `${failures}; cumulative ${formatDuration(request.totalDurationMilliseconds)}, `
+      + `avg ${formatDuration(request.averageDurationMilliseconds)}, `
+      + `p95 ${formatDuration(request.p95DurationMilliseconds)}, `
+      + `max ${formatDuration(request.maximumDurationMilliseconds)}`
+    );
+  }
 }
 
 function requireValue(

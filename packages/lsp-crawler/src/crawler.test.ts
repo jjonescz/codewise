@@ -85,12 +85,76 @@ describe("crawlWorkspace", () => {
       index.close();
 
       const firstCounts = await methodCounts(logPath);
+      expect(firstCounts.get("textDocument/documentHighlight") ?? 0).toBe(0);
       await crawlWorkspace(config, databasePath);
       const secondCounts = await methodCounts(logPath);
       expect(secondCounts.get("textDocument/references"))
         .toBe(firstCounts.get("textDocument/references"));
       expect(secondCounts.get("textDocument/hover"))
         .toBe(firstCounts.get("textDocument/hover"));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses cross-document answers before probing occurrences", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-reuse-"));
+    try {
+      const databasePath = join(directory, "index.db");
+      const logPath = join(directory, "server.log");
+      const content = "let value = 1;\nprint(value);\n";
+      await Promise.all([
+        writeFile(join(directory, "sample-a.toy"), content),
+        writeFile(join(directory, "sample-b.toy"), content)
+      ]);
+      const config: CrawlerConfig = {
+        workspaceRoot: directory,
+        server: {
+          command: process.execPath,
+          args: [
+            resolve(import.meta.dirname, "../test/fake-lsp-server.mjs"),
+            logPath,
+            "--cross-document-references"
+          ],
+          cwd: directory,
+          environment: {},
+          requestResponses: {}
+        },
+        documents: [{ languageId: "toy", extensions: [".toy"] }],
+        concurrency: 1,
+        requestTimeoutMilliseconds: 5_000,
+        workspaceLoadTimeoutMilliseconds: 5_000,
+        settleMilliseconds: 0,
+        lexicalFallback: false
+      };
+
+      const summary = await crawlWorkspace(config, databasePath);
+      expect(summary.database).toMatchObject({
+        documentCount: 2,
+        occurrenceCount: 6,
+        completedAnswerCount: 24,
+        completedHoverCount: 6
+      });
+      const counts = await methodCounts(logPath);
+      expect(counts.get("textDocument/references")).toBe(2);
+      expect(counts.get("textDocument/definition")).toBe(2);
+      expect(counts.get("textDocument/declaration")).toBe(2);
+      expect(counts.get("textDocument/documentHighlight") ?? 0).toBe(0);
+      expect(summary.requestStatistics.find(
+        (request) => request.method === "textDocument/references"
+      )).toMatchObject({
+        requestCount: 2,
+        succeeded: 2,
+        failed: 0
+      });
+
+      const index = openIndex(databasePath);
+      expect(index.references(
+        "sample-b.toy",
+        { line: 1, character: 7 },
+        true
+      )).toHaveLength(4);
+      index.close();
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

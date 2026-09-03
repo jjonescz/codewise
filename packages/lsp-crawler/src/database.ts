@@ -57,6 +57,18 @@ interface OccurrenceRow {
   readonly end_character: number;
 }
 
+interface AnswerSetRow {
+  readonly answer_set_id: number | null;
+}
+
+interface LocationRow {
+  readonly uri: string;
+  readonly start_line: number;
+  readonly start_character: number;
+  readonly end_line: number;
+  readonly end_character: number;
+}
+
 interface CurrentDocumentRow {
   readonly id: number;
   readonly uri: string;
@@ -346,12 +358,53 @@ export class CrawlerDatabase {
         `).run(answerSet.id, answerSet.id);
       } else if (kind === "definition" || kind === "declaration") {
         this.#propagateAcrossReferenceSet(occurrenceId, kind, answerSet.id);
+      } else if (kind === "highlights") {
+        this.#propagateHighlightsWithinDocument(
+          occurrenceId,
+          answerSet.id
+        );
       }
       this.#database.exec("COMMIT");
     } catch (error) {
       this.#database.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  public saveHighlightsFromReferences(
+    occurrenceId: number,
+    documentUri: string
+  ): boolean {
+    const referenceAnswer = this.#database.prepare(`
+      SELECT answer_set_id
+      FROM occurrence_answers
+      WHERE occurrence_id = ?
+        AND kind = 'references'
+        AND status = 'complete'
+    `).get(occurrenceId) as unknown as AnswerSetRow | undefined;
+    if (referenceAnswer?.answer_set_id === null || referenceAnswer === undefined) {
+      return false;
+    }
+    const locations = this.#database.prepare(`
+      SELECT
+        uri,
+        start_line,
+        start_character,
+        end_line,
+        end_character
+      FROM answer_locations
+      WHERE answer_set_id = ? AND uri = ?
+      ORDER BY ordinal
+    `).all(
+      referenceAnswer.answer_set_id,
+      documentUri
+    ) as unknown as readonly LocationRow[];
+    this.saveLocationAnswer(
+      occurrenceId,
+      "highlights",
+      locations.map(locationFromRow)
+    );
+    return true;
   }
 
   public saveAnswerError(
@@ -501,6 +554,35 @@ export class CrawlerDatabase {
     `).run(kind, answerSetId, occurrenceId);
   }
 
+  #propagateHighlightsWithinDocument(
+    occurrenceId: number,
+    answerSetId: number
+  ): void {
+    this.#database.prepare(`
+      INSERT INTO occurrence_answers (
+        occurrence_id, kind, answer_set_id, status, attempt_count
+      )
+      SELECT sibling.occurrence_id, 'highlights', ?, 'complete', 1
+      FROM occurrence_answers AS source
+      JOIN occurrences AS source_occurrence
+        ON source_occurrence.id = source.occurrence_id
+      JOIN occurrence_answers AS sibling
+        ON sibling.kind = 'references'
+       AND sibling.answer_set_id = source.answer_set_id
+      JOIN occurrences AS sibling_occurrence
+        ON sibling_occurrence.id = sibling.occurrence_id
+       AND sibling_occurrence.document_id = source_occurrence.document_id
+      WHERE source.occurrence_id = ?
+        AND source.kind = 'references'
+        AND EXISTS (
+          SELECT 1
+          FROM answer_locations
+          WHERE answer_set_id = source.answer_set_id
+        )
+      ON CONFLICT (occurrence_id, kind) DO NOTHING
+    `).run(answerSetId, occurrenceId);
+  }
+
   #count(table: string, condition?: string): number {
     const row = this.#database.prepare(
       `SELECT COUNT(*) AS count FROM ${table}${
@@ -548,6 +630,16 @@ function occurrenceFromRow(row: OccurrenceRow): OccurrenceRecord {
   return {
     id: row.id,
     documentId: row.document_id,
+    range: {
+      start: { line: row.start_line, character: row.start_character },
+      end: { line: row.end_line, character: row.end_character }
+    }
+  };
+}
+
+function locationFromRow(row: LocationRow): Location {
+  return {
+    uri: row.uri,
     range: {
       start: { line: row.start_line, character: row.start_character },
       end: { line: row.end_line, character: row.end_character }

@@ -72,6 +72,10 @@ and crawl semantic-token positions including locals:
 npm run index:roslyn -- --workspace-root C:\path\to\roslyn
 ```
 
+The indexer probes up to eight documents concurrently by default and schedules
+documents with the most discovered occurrences first to avoid a large-file
+tail. Use `--concurrency` to tune this for the language server and machine.
+
 This command restores the pinned `roslyn-language-server` local tool
 automatically before starting the crawl. It also checks that the current
 `dotnet` host can see the exact SDK requested by the workspace's
@@ -90,7 +94,18 @@ never reaches artifact upload.
 Periodic crawl progress includes elapsed time, document throughput, and an
 estimated remaining time. The final summary reports separate timings for
 document discovery, server initialization, index preparation, workspace-load
-waiting, document crawling, and the complete crawl.
+waiting, candidate discovery, occurrence probing, document crawling, and the
+complete crawl. It also reports per-LSP-method request counts, failures, and
+cumulative, average, p95, and maximum latency; these request statistics are
+persisted in the generated manifest. Per-method error-response counts include
+errors that the crawler can recover from; the separate crawl-failure and
+recovered-failure totals show their final disposition.
+
+Candidate discovery completes for the workspace before occurrence probing
+starts. This lets one references response populate matching occurrences across
+documents. Because the index stores document highlights as locations without
+read/write kinds, the crawler derives them from the already-fetched references
+when possible and only calls `textDocument/documentHighlight` as a fallback.
 
 The crawler covers the full workspace loaded by Roslyn rather than invoking a
 language-specific batch indexer. By default, the database, log, and manifest are

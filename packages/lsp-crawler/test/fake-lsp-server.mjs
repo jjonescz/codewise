@@ -6,9 +6,10 @@ if (logPath === undefined) {
 }
 
 let buffer = Buffer.alloc(0);
-let documentUri = "";
 const stuckProgress = process.argv.includes("--stuck-progress");
 const exitOnInitialize = process.argv.includes("--exit-on-initialize");
+const crossDocumentReferences =
+  process.argv.includes("--cross-document-references");
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
   readMessages();
@@ -44,9 +45,6 @@ function handleMessage(message) {
     process.exit(0);
   }
   if (message.id === undefined) {
-    if (message.method === "textDocument/didOpen") {
-      documentUri = message.params.textDocument.uri;
-    }
     return;
   }
 
@@ -130,18 +128,25 @@ function handleMessage(message) {
 }
 
 function locationsFor(params) {
-  return isValueRequest(params)
-    ? [location(0, 4, 9), location(1, 6, 11)]
-    : [location(1, 0, 5)];
+  const uris = crossDocumentReferences
+    ? ["sample-a.toy", "sample-b.toy"].map(
+      (name) => new URL(name, params.textDocument.uri).href
+    )
+    : [params.textDocument.uri];
+  return uris.flatMap((uri) => (
+    isValueRequest(params)
+      ? [location(uri, 0, 4, 9), location(uri, 1, 6, 11)]
+      : [location(uri, 1, 0, 5)]
+  ));
 }
 
 function isValueRequest(params) {
   return params.position?.line === 0 || (params.position?.character ?? 0) >= 6;
 }
 
-function location(line, start, end) {
+function location(uri, line, start, end) {
   return {
-    uri: documentUri,
+    uri,
     range: {
       start: { line, character: start },
       end: { line, character: end }
