@@ -1,31 +1,61 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  assertRequiredSdkInstalled,
-  parseInstalledSdkVersions
+  createSdkResolverEnvironment,
+  parseInstalledSdks,
+  resolveRequiredSdkInstallation
 } from "./sdk-preflight.js";
 
-const globalJsonPath = "C:\\workspace\\global.json";
+const globalJsonPath = join("workspace", "global.json");
+const sdkBasePath = join("dotnet", "sdk");
 
 describe("workspace SDK preflight", () => {
-  it("accepts the exact SDK requested by global.json", () => {
-    const installed = parseInstalledSdkVersions([
-      "10.0.303 [C:\\dotnet\\sdk]",
-      "11.0.100-preview.6.26359.118 [C:\\dotnet\\sdk]"
+  it("resolves the exact SDK installation requested by global.json", () => {
+    const installed = parseInstalledSdks([
+      `10.0.303 [${sdkBasePath}]`,
+      `11.0.100-preview.6.26359.118 [${sdkBasePath}]`
     ].join("\n"));
 
-    expect(() => assertRequiredSdkInstalled(
+    const requiredSdk = resolveRequiredSdkInstallation(
       "11.0.100-preview.6.26359.118",
       installed,
       globalJsonPath
-    )).not.toThrow();
+    );
+    expect(requiredSdk).toEqual({
+      version: "11.0.100-preview.6.26359.118",
+      dotnetRoot: join("dotnet"),
+      msbuildSdksPath: join(
+        sdkBasePath,
+        "11.0.100-preview.6.26359.118",
+        "Sdks"
+      )
+    });
+    expect(createSdkResolverEnvironment(
+      requiredSdk,
+      join("system", "bin"),
+      process.platform === "win32" ? ";" : ":"
+    )).toEqual({
+      DOTNET_MSBUILD_SDK_RESOLVER_CLI_DIR: join("dotnet"),
+      DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR: join(
+        sdkBasePath,
+        "11.0.100-preview.6.26359.118",
+        "Sdks"
+      ),
+      DOTNET_MSBUILD_SDK_RESOLVER_SDKS_VER:
+        "11.0.100-preview.6.26359.118",
+      PATH: [
+        join("dotnet"),
+        join("system", "bin")
+      ].join(process.platform === "win32" ? ";" : ":")
+    });
   });
 
   it("rejects a different preview of the same feature band", () => {
-    const installed = parseInstalledSdkVersions(
-      "11.0.100-preview.7.26381.103 [C:\\dotnet\\sdk]"
+    const installed = parseInstalledSdks(
+      `11.0.100-preview.7.26381.103 [${sdkBasePath}]`
     );
 
-    expect(() => assertRequiredSdkInstalled(
+    expect(() => resolveRequiredSdkInstallation(
       "11.0.100-preview.6.26359.118",
       installed,
       globalJsonPath

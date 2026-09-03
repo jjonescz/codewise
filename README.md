@@ -74,9 +74,10 @@ npm run index:roslyn -- --workspace-root C:\path\to\roslyn
 
 This command restores the pinned `roslyn-language-server` local tool
 automatically before starting the crawl. It also checks that the current
-`dotnet` host can see the exact SDK requested by the Roslyn checkout's
-`global.json`. A missing SDK is reported once before the language server starts
-or existing index artifacts are replaced.
+`dotnet` host can see the exact SDK requested by the workspace's
+`global.json` and binds language-server project evaluation to that SDK
+installation and its workload manifests. A missing SDK is reported once before
+the language server starts or existing index artifacts are replaced.
 
 The command prints the generated `lsp-crawler.log` path before starting.
 Language-server diagnostics are written only to that file; the terminal shows

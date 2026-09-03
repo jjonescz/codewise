@@ -1,4 +1,31 @@
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+export interface InstalledSdk {
+  readonly version: string;
+  readonly sdkBasePath: string;
+}
+
+export interface RequiredSdkInstallation {
+  readonly version: string;
+  readonly dotnetRoot: string;
+  readonly msbuildSdksPath: string;
+}
+
+export function createSdkResolverEnvironment(
+  sdk: RequiredSdkInstallation,
+  inheritedPath: string | undefined,
+  pathDelimiter: string
+): Readonly<Record<string, string>> {
+  return {
+    DOTNET_MSBUILD_SDK_RESOLVER_CLI_DIR: sdk.dotnetRoot,
+    DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR: sdk.msbuildSdksPath,
+    DOTNET_MSBUILD_SDK_RESOLVER_SDKS_VER: sdk.version,
+    PATH: inheritedPath === undefined || inheritedPath.length === 0
+      ? sdk.dotnetRoot
+      : `${sdk.dotnetRoot}${pathDelimiter}${inheritedPath}`
+  };
+}
 
 export function readRequiredSdkVersion(globalJsonPath: string): string {
   let value: unknown;
@@ -19,29 +46,45 @@ export function readRequiredSdkVersion(globalJsonPath: string): string {
   return version;
 }
 
-export function parseInstalledSdkVersions(output: string): readonly string[] {
-  const versions: string[] = [];
+export function parseInstalledSdks(output: string): readonly InstalledSdk[] {
+  const installations: InstalledSdk[] = [];
   for (const line of output.split(/\r?\n/u)) {
-    const match = /^(\S+)\s+\[[^\]]+\]\s*$/u.exec(line.trim());
-    if (match?.[1] !== undefined) {
-      versions.push(match[1]);
+    const match = /^(\S+)\s+\[(.+)\]\s*$/u.exec(line.trim());
+    if (match?.[1] !== undefined && match[2] !== undefined) {
+      installations.push({
+        version: match[1],
+        sdkBasePath: match[2]
+      });
     }
   }
-  return versions;
+  return installations;
 }
 
-export function assertRequiredSdkInstalled(
+export function resolveRequiredSdkInstallation(
   requiredVersion: string,
-  installedVersions: readonly string[],
+  installedSdks: readonly InstalledSdk[],
   globalJsonPath: string
-): void {
-  if (installedVersions.includes(requiredVersion)) {
-    return;
+): RequiredSdkInstallation {
+  const installation = installedSdks.find(
+    (candidate) => candidate.version === requiredVersion
+  );
+  if (installation !== undefined) {
+    return {
+      version: installation.version,
+      dotnetRoot: dirname(installation.sdkBasePath),
+      msbuildSdksPath: join(
+        installation.sdkBasePath,
+        installation.version,
+        "Sdks"
+      )
+    };
   }
 
-  const installed = installedVersions.length === 0
+  const installed = installedSdks.length === 0
     ? "  (none)"
-    : installedVersions.map((version) => `  ${version}`).join("\n");
+    : installedSdks
+        .map((sdk) => `  ${sdk.version} [${sdk.sdkBasePath}]`)
+        .join("\n");
   throw new Error(
     `The workspace requires .NET SDK ${requiredVersion} from ${globalJsonPath}, `
     + "but that exact SDK is not installed for the current dotnet host.\n\n"

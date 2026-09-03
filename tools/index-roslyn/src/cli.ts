@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -20,9 +20,10 @@ import {
 } from "@codewise/lsp-crawler";
 import { resolveIndexOutputPaths } from "./output-paths.js";
 import {
-  assertRequiredSdkInstalled,
-  parseInstalledSdkVersions,
-  readRequiredSdkVersion
+  createSdkResolverEnvironment,
+  parseInstalledSdks,
+  readRequiredSdkVersion,
+  resolveRequiredSdkInstallation
 } from "./sdk-preflight.js";
 
 interface Options {
@@ -115,12 +116,12 @@ async function main(): Promise<void> {
   );
   const globalJsonPath = resolve(options.workspaceRoot, "global.json");
   const requiredSdkVersion = readRequiredSdkVersion(globalJsonPath);
-  const installedSdkVersions = parseInstalledSdkVersions(
+  const installedSdks = parseInstalledSdks(
     runCapture("dotnet", ["--list-sdks"], options.workspaceRoot)
   );
-  assertRequiredSdkInstalled(
+  const requiredSdk = resolveRequiredSdkInstallation(
     requiredSdkVersion,
-    installedSdkVersions,
+    installedSdks,
     globalJsonPath
   );
   const { databasePath, logPath, manifestPath } = resolveIndexOutputPaths(
@@ -143,7 +144,10 @@ async function main(): Promise<void> {
   const config: CrawlerConfig = {
     workspaceRoot: options.workspaceRoot,
     server: {
-      command: "dotnet",
+      command: resolve(
+        requiredSdk.dotnetRoot,
+        process.platform === "win32" ? "dotnet.exe" : "dotnet"
+      ),
       args: [
         "tool",
         "run",
@@ -159,6 +163,11 @@ async function main(): Promise<void> {
       cwd: repositoryRoot,
       environment: {
         DOTNET_CLI_TELEMETRY_OPTOUT: "1",
+        ...createSdkResolverEnvironment(
+          requiredSdk,
+          process.env["PATH"],
+          delimiter
+        ),
         DOTNET_NOLOGO: "1"
       },
       requestResponses: {
@@ -179,6 +188,7 @@ async function main(): Promise<void> {
 
   console.log(`Indexing commit ${workspaceCommit}`);
   console.log(`Required .NET SDK: ${requiredSdkVersion}`);
+  console.log(`Resolved .NET SDK: ${dirname(requiredSdk.msbuildSdksPath)}`);
   console.log(`Workspace: ${options.workspaceRoot}`);
   console.log(`Output: ${databasePath}`);
   console.log(
