@@ -32,9 +32,14 @@ describe("workspace SDK preflight", () => {
     });
     expect(createSdkResolverEnvironment(
       requiredSdk,
+      join("dotnet", process.platform === "win32" ? "dotnet.exe" : "dotnet"),
       join("system", "bin"),
       process.platform === "win32" ? ";" : ":"
     )).toEqual({
+      DOTNET_HOST_PATH: join(
+        "dotnet",
+        process.platform === "win32" ? "dotnet.exe" : "dotnet"
+      ),
       DOTNET_MSBUILD_SDK_RESOLVER_CLI_DIR: join("dotnet"),
       DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR: join(
         sdkBasePath,

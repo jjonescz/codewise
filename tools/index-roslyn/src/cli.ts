@@ -142,13 +142,14 @@ async function main(): Promise<void> {
 
   const log = createWriteStream(logPath, { encoding: "utf8", flags: "w" });
   const mirrorServerLogs = isCiEnvironment();
+  const dotnetExecutablePath = resolve(
+    requiredSdk.dotnetRoot,
+    process.platform === "win32" ? "dotnet.exe" : "dotnet"
+  );
   const config: CrawlerConfig = {
     workspaceRoot: options.workspaceRoot,
     server: {
-      command: resolve(
-        requiredSdk.dotnetRoot,
-        process.platform === "win32" ? "dotnet.exe" : "dotnet"
-      ),
+      command: dotnetExecutablePath,
       args: [
         "tool",
         "run",
@@ -166,6 +167,7 @@ async function main(): Promise<void> {
         DOTNET_CLI_TELEMETRY_OPTOUT: "1",
         ...createSdkResolverEnvironment(
           requiredSdk,
+          dotnetExecutablePath,
           process.env["PATH"],
           delimiter
         ),

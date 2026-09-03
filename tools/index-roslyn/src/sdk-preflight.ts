@@ -14,10 +14,12 @@ export interface RequiredSdkInstallation {
 
 export function createSdkResolverEnvironment(
   sdk: RequiredSdkInstallation,
+  dotnetExecutablePath: string,
   inheritedPath: string | undefined,
   pathDelimiter: string
 ): Readonly<Record<string, string>> {
   return {
+    DOTNET_HOST_PATH: dotnetExecutablePath,
     DOTNET_MSBUILD_SDK_RESOLVER_CLI_DIR: sdk.dotnetRoot,
     DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR: sdk.msbuildSdksPath,
     DOTNET_MSBUILD_SDK_RESOLVER_SDKS_VER: sdk.version,
