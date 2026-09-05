@@ -76,6 +76,27 @@ The indexer probes up to eight documents concurrently by default and schedules
 documents with the most discovered occurrences first to avoid a large-file
 tail. Use `--concurrency` to tune this for the language server and machine.
 
+An experimental Roslyn-specific bulk reference path can be enabled with:
+
+```powershell
+npm run index:roslyn:bulk -- --workspace-root C:\path\to\roslyn
+```
+
+This builds and activates `Codewise.RoslynExtension.dll` through Roslyn's
+extension-message API. The extension resolves C# and Visual Basic occurrence
+positions in one workspace request, deduplicates their `ISymbol` instances, and
+calls Roslyn's public `SymbolFinder.FindReferencesAsync` API. Other languages,
+unresolved occurrences, activation failures, and dispatch failures retain the
+standard LSP fallback.
+
+The option is experimental and is not the default. In the current benchmark,
+the extension's symbol binding took about 3 seconds and its reference searches
+took about 5.5 minutes, but the complete mixed C#/Razor crawl took about 22
+minutes versus 14.5 minutes on the standard path. The public `SymbolFinder` API
+also returned fewer workspace reference locations than Roslyn's LSP handler and
+uses different generated-document locations, so its output is not yet an exact
+replacement.
+
 This command restores the pinned `roslyn-language-server` local tool
 automatically before starting the crawl. It also checks that the current
 `dotnet` host can see the exact SDK requested by the workspace's

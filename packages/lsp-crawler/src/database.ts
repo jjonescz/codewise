@@ -44,6 +44,12 @@ export interface OccurrenceRecord {
   readonly range: Range;
 }
 
+export interface SharedLocationAnswerInput {
+  readonly occurrenceIds: readonly number[];
+  readonly kind: LocationAnswerKind;
+  readonly locations: readonly Location[];
+}
+
 interface RowWithId {
   readonly id: number;
 }
@@ -283,91 +289,129 @@ export class CrawlerDatabase {
     kind: LocationAnswerKind,
     locations: readonly Location[]
   ): void {
-    const normalized = normalizeLocations(locations);
-    const hash = createHash("sha256")
-      .update(JSON.stringify(normalized))
-      .digest("hex");
+    this.saveSharedLocationAnswer([occurrenceId], kind, locations);
+  }
 
+  public saveSharedLocationAnswer(
+    occurrenceIds: readonly number[],
+    kind: LocationAnswerKind,
+    locations: readonly Location[]
+  ): void {
+    this.saveSharedLocationAnswers([{ occurrenceIds, kind, locations }]);
+  }
+
+  public saveSharedLocationAnswers(
+    answers: readonly SharedLocationAnswerInput[]
+  ): void {
+    if (answers.some((answer) => answer.occurrenceIds.length === 0)) {
+      throw new Error("Shared location answers require at least one occurrence.");
+    }
     this.#database.exec("BEGIN IMMEDIATE");
     try {
-      this.#database.prepare(`
-        INSERT INTO answer_sets (kind, content_hash)
-        VALUES (?, ?)
-        ON CONFLICT (kind, content_hash) DO NOTHING
-      `).run(kind, hash);
-      const answerSet = requiredRow<RowWithId>(
-        this.#database.prepare(`
-          SELECT id FROM answer_sets WHERE kind = ? AND content_hash = ?
-        `),
-        kind,
-        hash
-      );
-      const insertLocation = this.#database.prepare(`
-        INSERT INTO answer_locations (
-          answer_set_id,
-          ordinal,
-          uri,
-          start_line,
-          start_character,
-          end_line,
-          end_character
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (answer_set_id, ordinal) DO NOTHING
-      `);
-      normalized.forEach((location, ordinal) => {
-        insertLocation.run(
-          answerSet.id,
-          ordinal,
-          location.uri,
-          location.range.start.line,
-          location.range.start.character,
-          location.range.end.line,
-          location.range.end.character
-        );
-      });
-      this.#database.prepare(`
-        INSERT INTO occurrence_answers (
-          occurrence_id, kind, answer_set_id, status, attempt_count
-        )
-        VALUES (?, ?, ?, 'complete', 1)
-        ON CONFLICT (occurrence_id, kind) DO UPDATE SET
-          answer_set_id = excluded.answer_set_id,
-          status = 'complete',
-          error_code = NULL,
-          error_message = NULL,
-          attempt_count = occurrence_answers.attempt_count + 1
-      `).run(occurrenceId, kind, answerSet.id);
-
-      if (kind === "references") {
-        this.#database.prepare(`
-          INSERT INTO occurrence_answers (
-            occurrence_id, kind, answer_set_id, status, attempt_count
-          )
-          SELECT occurrence.id, 'references', ?, 'complete', 1
-          FROM answer_locations AS location
-          JOIN documents AS document ON document.uri = location.uri
-          JOIN occurrences AS occurrence
-            ON occurrence.document_id = document.id
-           AND occurrence.start_line = location.start_line
-           AND occurrence.start_character = location.start_character
-           AND occurrence.end_line = location.end_line
-           AND occurrence.end_character = location.end_character
-          WHERE location.answer_set_id = ?
-          ON CONFLICT (occurrence_id, kind) DO NOTHING
-        `).run(answerSet.id, answerSet.id);
-      } else if (kind === "definition" || kind === "declaration") {
-        this.#propagateAcrossReferenceSet(occurrenceId, kind, answerSet.id);
-      } else if (kind === "highlights") {
-        this.#propagateHighlightsWithinDocument(
-          occurrenceId,
-          answerSet.id
+      for (const answer of answers) {
+        this.#saveSharedLocationAnswer(
+          answer.occurrenceIds,
+          answer.kind,
+          answer.locations
         );
       }
       this.#database.exec("COMMIT");
     } catch (error) {
       this.#database.exec("ROLLBACK");
       throw error;
+    }
+  }
+
+  #saveSharedLocationAnswer(
+    occurrenceIds: readonly number[],
+    kind: LocationAnswerKind,
+    locations: readonly Location[]
+  ): void {
+    const normalized = normalizeLocations(locations);
+    const hash = createHash("sha256")
+      .update(JSON.stringify(normalized))
+      .digest("hex");
+
+    this.#database.prepare(`
+      INSERT INTO answer_sets (kind, content_hash)
+      VALUES (?, ?)
+      ON CONFLICT (kind, content_hash) DO NOTHING
+    `).run(kind, hash);
+    const answerSet = requiredRow<RowWithId>(
+      this.#database.prepare(`
+        SELECT id FROM answer_sets WHERE kind = ? AND content_hash = ?
+      `),
+      kind,
+      hash
+    );
+    const insertLocation = this.#database.prepare(`
+      INSERT INTO answer_locations (
+        answer_set_id,
+        ordinal,
+        uri,
+        start_line,
+        start_character,
+        end_line,
+        end_character
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (answer_set_id, ordinal) DO NOTHING
+    `);
+    normalized.forEach((location, ordinal) => {
+      insertLocation.run(
+        answerSet.id,
+        ordinal,
+        location.uri,
+        location.range.start.line,
+        location.range.start.character,
+        location.range.end.line,
+        location.range.end.character
+      );
+    });
+    const saveOccurrenceAnswer = this.#database.prepare(`
+      INSERT INTO occurrence_answers (
+        occurrence_id, kind, answer_set_id, status, attempt_count
+      )
+      VALUES (?, ?, ?, 'complete', 1)
+      ON CONFLICT (occurrence_id, kind) DO UPDATE SET
+        answer_set_id = excluded.answer_set_id,
+        status = 'complete',
+        error_code = NULL,
+        error_message = NULL,
+        attempt_count = occurrence_answers.attempt_count + 1
+    `);
+    for (const occurrenceId of occurrenceIds) {
+      saveOccurrenceAnswer.run(occurrenceId, kind, answerSet.id);
+    }
+
+    if (kind === "references") {
+      this.#database.prepare(`
+        INSERT INTO occurrence_answers (
+          occurrence_id, kind, answer_set_id, status, attempt_count
+        )
+        SELECT occurrence.id, 'references', ?, 'complete', 1
+        FROM answer_locations AS location
+        JOIN documents AS document ON document.uri = location.uri
+        JOIN occurrences AS occurrence
+          ON occurrence.document_id = document.id
+         AND occurrence.start_line = location.start_line
+         AND occurrence.start_character = location.start_character
+         AND occurrence.end_line = location.end_line
+         AND occurrence.end_character = location.end_character
+        WHERE location.answer_set_id = ?
+        ON CONFLICT (occurrence_id, kind) DO NOTHING
+      `).run(answerSet.id, answerSet.id);
+    } else if (kind === "definition" || kind === "declaration") {
+      for (const occurrenceId of occurrenceIds) {
+        this.#propagateAcrossReferenceSet(occurrenceId, kind, answerSet.id);
+      }
+    } else if (kind === "highlights") {
+      for (const occurrenceId of occurrenceIds) {
+        this.#propagateHighlightsWithinDocument(
+          occurrenceId,
+          answerSet.id
+        );
+      }
     }
   }
 

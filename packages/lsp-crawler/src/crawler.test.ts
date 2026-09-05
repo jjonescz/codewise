@@ -4,7 +4,10 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { CodeIndex, type SqlDatabase, type SqlRow, type SqlValue } from "@codewise/index-core";
-import { LspProcessClient } from "./client.js";
+import {
+  LspProcessClient,
+  LspRequestTimeoutError
+} from "./client.js";
 import type { CrawlerConfig } from "./config.js";
 import { crawlWorkspace } from "./crawler.js";
 
@@ -160,6 +163,100 @@ describe("crawlWorkspace", () => {
     }
   });
 
+  it("uses a bulk reference provider and falls back when it fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-bulk-"));
+    try {
+      const content = "let value = 1;\nprint(value);\n";
+      await writeFile(join(directory, "sample.toy"), content);
+      const serverPath = resolve(
+        import.meta.dirname,
+        "../test/fake-lsp-server.mjs"
+      );
+      const config: CrawlerConfig = {
+        workspaceRoot: directory,
+        server: {
+          command: process.execPath,
+          args: [serverPath, join(directory, "server.log")],
+          cwd: directory,
+          environment: {},
+          requestResponses: {}
+        },
+        documents: [{ languageId: "toy", extensions: [".toy"] }],
+        concurrency: 1,
+        requestTimeoutMilliseconds: 5_000,
+        workspaceLoadTimeoutMilliseconds: 5_000,
+        settleMilliseconds: 0,
+        lexicalFallback: false
+      };
+      const bulkDatabasePath = join(directory, "bulk.db");
+      const bulkSummary = await crawlWorkspace(config, bulkDatabasePath, {
+        bulkReferenceProvider: {
+          name: "test-provider",
+          languageIds: new Set(["toy"]),
+          async populateReferences(_client, documents) {
+            const occurrences = documents.flatMap(
+              (document) => document.occurrences
+            );
+            return {
+              groups: [{
+                occurrenceIds: occurrences.map((occurrence) => occurrence.id),
+                locations: occurrences.map((occurrence) => ({
+                  uri: documents[0]!.uri,
+                  range: {
+                    start: occurrence.position,
+                    end: {
+                      line: occurrence.position.line,
+                      character: occurrence.position.character + 1
+                    }
+                  }
+                }))
+              }],
+              unresolvedOccurrenceCount: 0,
+              failedOccurrenceCount: 0
+            };
+          }
+        }
+      });
+      expect(bulkSummary.bulkReferences).toMatchObject({
+        provider: "test-provider",
+        status: "used",
+        populatedOccurrenceCount: 3
+      });
+      expect((await methodCounts(join(directory, "server.log")))
+        .get("textDocument/references") ?? 0).toBe(0);
+
+      const fallbackLogPath = join(directory, "fallback.log");
+      const fallbackSummary = await crawlWorkspace(
+        {
+          ...config,
+          server: {
+            ...config.server,
+            args: [serverPath, fallbackLogPath]
+          }
+        },
+        join(directory, "fallback.db"),
+        {
+          bulkReferenceProvider: {
+            name: "failing-provider",
+            languageIds: new Set(["toy"]),
+            populateReferences() {
+              throw new Error("Expected provider failure.");
+            }
+          }
+        }
+      );
+      expect(fallbackSummary.bulkReferences).toMatchObject({
+        provider: "failing-provider",
+        status: "fallback",
+        populatedOccurrenceCount: 0
+      });
+      expect((await methodCounts(fallbackLogPath))
+        .get("textDocument/references")).toBeGreaterThan(0);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("treats an unfinished workspace progress token as advisory", async () => {
     const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-progress-"));
     const serverPath = resolve(
@@ -221,6 +318,49 @@ describe("crawlWorkspace", () => {
       );
     } finally {
       await client.stop().catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels timed-out language server requests", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-timeout-"));
+    const logPath = join(directory, "server.log");
+    const config: CrawlerConfig = {
+      workspaceRoot: directory,
+      server: {
+        command: process.execPath,
+        args: [
+          resolve(import.meta.dirname, "../test/fake-lsp-server.mjs"),
+          logPath,
+          "--hang-references"
+        ],
+        cwd: directory,
+        environment: {},
+        requestResponses: {}
+      },
+      documents: [{ languageId: "toy", extensions: [".toy"] }],
+      concurrency: 1,
+      requestTimeoutMilliseconds: 1_000,
+      workspaceLoadTimeoutMilliseconds: 5_000,
+      settleMilliseconds: 0,
+      lexicalFallback: false
+    };
+    const client = new LspProcessClient(config);
+    try {
+      await client.start();
+      await expect(client.request(
+        "textDocument/references",
+        {
+          textDocument: { uri: "file:///sample.toy" },
+          position: { line: 0, character: 0 },
+          context: { includeDeclaration: true }
+        },
+        10
+      )).rejects.toBeInstanceOf(LspRequestTimeoutError);
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+      expect((await methodCounts(logPath)).get("$/cancelRequest")).toBe(1);
+    } finally {
+      await client.stop();
       await rm(directory, { recursive: true, force: true });
     }
   });

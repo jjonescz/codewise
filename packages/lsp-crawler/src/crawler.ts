@@ -6,6 +6,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import {
   LspProcessClient,
+  LspRequestTimeoutError,
   LspResponseError,
   type LspRequestStatistics
 } from "./client.js";
@@ -46,6 +47,7 @@ export interface CrawlTimings {
   readonly indexPreparationMilliseconds: number;
   readonly workspaceLoadWaitMilliseconds: number;
   readonly candidateDiscoveryMilliseconds: number;
+  readonly bulkReferenceMilliseconds: number;
   readonly occurrenceProbeMilliseconds: number;
   readonly documentCrawlMilliseconds: number;
   readonly totalMilliseconds: number;
@@ -57,6 +59,7 @@ export interface CrawlSummary {
   readonly requestFailures: number;
   readonly recoveredRequestFailures: number;
   readonly requestStatistics: readonly LspRequestStatistics[];
+  readonly bulkReferences?: BulkReferenceSummary;
   readonly database: ReturnType<CrawlerDatabase["statistics"]>;
   readonly timings: CrawlTimings;
 }
@@ -77,6 +80,50 @@ export class CrawlError extends AggregateError {
 export interface CrawlOptions {
   readonly onLog?: (message: string) => void;
   readonly onProgress?: (progress: CrawlProgress) => void;
+  readonly bulkReferenceProvider?: BulkReferenceProvider;
+}
+
+export interface BulkReferenceDocument {
+  readonly uri: string;
+  readonly languageId: string;
+  readonly occurrences: readonly BulkReferenceOccurrence[];
+}
+
+export interface BulkReferenceOccurrence {
+  readonly id: number;
+  readonly position: Position;
+}
+
+export interface BulkReferenceGroup {
+  readonly occurrenceIds: readonly number[];
+  readonly locations: readonly Location[];
+}
+
+export interface BulkReferenceResult {
+  readonly groups: readonly BulkReferenceGroup[];
+  readonly unresolvedOccurrenceCount: number;
+  readonly failedOccurrenceCount: number;
+  readonly metrics?: Readonly<Record<string, number>>;
+}
+
+export interface BulkReferenceProvider {
+  readonly name: string;
+  readonly languageIds: ReadonlySet<string>;
+  populateReferences(
+    client: LspProcessClient,
+    documents: readonly BulkReferenceDocument[]
+  ): Promise<BulkReferenceResult>;
+}
+
+export interface BulkReferenceSummary {
+  readonly provider: string;
+  readonly status: "used" | "fallback";
+  readonly occurrenceCount: number;
+  readonly populatedOccurrenceCount: number;
+  readonly unresolvedOccurrenceCount: number;
+  readonly failedOccurrenceCount: number;
+  readonly elapsedMilliseconds: number;
+  readonly metrics?: Readonly<Record<string, number>>;
 }
 
 interface Candidate {
@@ -212,50 +259,31 @@ export async function crawlWorkspace(
     ));
 
     let documentsCompleted = 0;
-    const occurrenceProbeStartedAt = performance.now();
-    await mapConcurrent(prioritizedWork, config.concurrency, async (documentWork) => {
-      try {
-        if (documentWork.prepared !== undefined) {
-          await probeDocument(
-            client,
-            database,
-            documentWork.prepared,
-            failures,
-            counters
-          );
-        }
-      } catch (error) {
-        const failure = requestFailure(
-          "occurrence probing",
-          documentWork.document.relativePath,
-          error
-        );
-        failures.push(failure);
-        onLog(failure.message);
-      } finally {
-        documentsCompleted++;
-        const elapsedMilliseconds =
-          performance.now() - occurrenceProbeStartedAt;
-        const documentsPerSecond = elapsedMilliseconds === 0
-          ? 0
-          : documentsCompleted * 1_000 / elapsedMilliseconds;
-        const estimatedRemainingMilliseconds = documentsPerSecond === 0
-          ? 0
-          : (documents.length - documentsCompleted)
-            * 1_000
-            / documentsPerSecond;
-        options.onProgress?.({
-          documentsCompleted,
-          documentCount: documents.length,
-          currentDocument: documentWork.document.relativePath,
-          elapsedMilliseconds,
-          documentsPerSecond,
-          estimatedRemainingMilliseconds
-        });
-      }
-    });
-    const occurrenceProbeMilliseconds =
-      performance.now() - occurrenceProbeStartedAt;
+    let occurrenceProbeMilliseconds = 0;
+    const progressStartedAt = performance.now();
+    const provider = options.bulkReferenceProvider;
+    const standardWork = provider === undefined
+      ? prioritizedWork
+      : prioritizedWork.filter((documentWork) => (
+          !provider.languageIds.has(documentWork.document.languageId)
+        ));
+    const providerWork = provider === undefined
+      ? []
+      : prioritizedWork.filter((documentWork) => (
+          provider.languageIds.has(documentWork.document.languageId)
+        ));
+    await probeWork(standardWork);
+    const bulkReferenceStartedAt = performance.now();
+    const bulkReferences = await populateBulkReferences(
+      client,
+      database,
+      providerWork,
+      provider,
+      onLog
+    );
+    const bulkReferenceMilliseconds =
+      performance.now() - bulkReferenceStartedAt;
+    await probeWork(providerWork);
     const documentCrawlMilliseconds =
       performance.now() - documentCrawlStartedAt;
 
@@ -266,6 +294,7 @@ export async function crawlWorkspace(
       requestFailures: failures.length,
       recoveredRequestFailures: counters.recoveredRequestFailures,
       requestStatistics: client.requestStatistics(),
+      ...(bulkReferences === undefined ? {} : { bulkReferences }),
       database: database.statistics(),
       timings: {
         documentDiscoveryMilliseconds,
@@ -273,6 +302,7 @@ export async function crawlWorkspace(
         indexPreparationMilliseconds,
         workspaceLoadWaitMilliseconds,
         candidateDiscoveryMilliseconds,
+        bulkReferenceMilliseconds,
         occurrenceProbeMilliseconds,
         documentCrawlMilliseconds,
         totalMilliseconds: performance.now() - startedAt
@@ -283,6 +313,56 @@ export async function crawlWorkspace(
     }
     completedSuccessfully = true;
     return summary;
+
+    async function probeWork(documentWorkItems: readonly DocumentWork[]): Promise<void> {
+      const startedAt = performance.now();
+      await mapConcurrent(
+        documentWorkItems,
+        config.concurrency,
+        async (documentWork) => {
+          try {
+            if (documentWork.prepared !== undefined) {
+              await probeDocument(
+                client,
+                database,
+                documentWork.prepared,
+                failures,
+                counters
+              );
+            }
+          } catch (error) {
+            const failure = requestFailure(
+              "occurrence probing",
+              documentWork.document.relativePath,
+              error
+            );
+            failures.push(failure);
+            onLog(failure.message);
+          } finally {
+            documentsCompleted++;
+            const elapsedMilliseconds =
+              performance.now() - progressStartedAt;
+            const documentsPerSecond = elapsedMilliseconds === 0
+              ? 0
+              : documentsCompleted * 1_000 / elapsedMilliseconds;
+            const estimatedRemainingMilliseconds = documentsPerSecond === 0
+              ? 0
+              : (documents.length - documentsCompleted)
+                * 1_000
+                / documentsPerSecond;
+            options.onProgress?.({
+              documentsCompleted,
+              documentCount: documents.length,
+              currentDocument: documentWork.document.relativePath,
+              elapsedMilliseconds,
+              documentsPerSecond,
+              estimatedRemainingMilliseconds
+            });
+          }
+        }
+      );
+      occurrenceProbeMilliseconds += performance.now() - startedAt;
+    }
   } finally {
     try {
       await client.stop().catch((error) => {
@@ -298,6 +378,113 @@ export async function crawlWorkspace(
           : "[crawler] [error] Crawl failed."
       );
     }
+  }
+}
+
+async function populateBulkReferences(
+  client: LspProcessClient,
+  database: CrawlerDatabase,
+  work: readonly DocumentWork[],
+  provider: BulkReferenceProvider | undefined,
+  onLog: (message: string) => void
+): Promise<BulkReferenceSummary | undefined> {
+  if (provider === undefined) {
+    return undefined;
+  }
+  const documents = work.flatMap((documentWork): BulkReferenceDocument[] => {
+    const prepared = documentWork.prepared;
+    if (
+      prepared === undefined
+      || !provider.languageIds.has(prepared.document.languageId)
+    ) {
+      return [];
+    }
+    return [{
+      uri: prepared.uri,
+      languageId: prepared.document.languageId,
+      occurrences: database.listOccurrences(prepared.recordId).map(
+        (occurrence) => ({
+          id: occurrence.id,
+          position: occurrence.range.start
+        })
+      )
+    }];
+  });
+  const occurrenceIds = new Set(
+    documents.flatMap((document) => (
+      document.occurrences.map((occurrence) => occurrence.id)
+    ))
+  );
+  const startedAt = performance.now();
+  try {
+    const result = await provider.populateReferences(client, documents);
+    const savedOccurrenceIds = new Set<number>();
+    const answers: Array<{
+      readonly occurrenceIds: readonly number[];
+      readonly kind: "references";
+      readonly locations: readonly Location[];
+    }> = [];
+    for (const group of result.groups) {
+      if (
+        group.occurrenceIds.length === 0
+        || group.occurrenceIds.some((id) => !occurrenceIds.has(id))
+      ) {
+        throw new Error(
+          `Bulk reference provider ${provider.name} returned invalid occurrence IDs.`
+        );
+      }
+      for (const id of group.occurrenceIds) {
+        if (savedOccurrenceIds.has(id)) {
+          throw new Error(
+            `Bulk reference provider ${provider.name} returned occurrence ${id} `
+            + "in more than one group."
+          );
+        }
+        savedOccurrenceIds.add(id);
+      }
+      answers.push({
+        occurrenceIds: group.occurrenceIds,
+        kind: "references",
+        locations: group.locations
+      });
+    }
+    database.saveSharedLocationAnswers(answers);
+    const summary: BulkReferenceSummary = {
+      provider: provider.name,
+      status: "used",
+      occurrenceCount: occurrenceIds.size,
+      populatedOccurrenceCount: savedOccurrenceIds.size,
+      unresolvedOccurrenceCount: result.unresolvedOccurrenceCount,
+      failedOccurrenceCount: result.failedOccurrenceCount,
+      elapsedMilliseconds: performance.now() - startedAt,
+      ...(result.metrics === undefined ? {} : { metrics: result.metrics })
+    };
+    onLog(
+      `[crawler] [info] Bulk reference provider ${provider.name} populated `
+      + `${savedOccurrenceIds.size}/${occurrenceIds.size} occurrence(s) in `
+      + `${Math.round(summary.elapsedMilliseconds)}ms.`
+    );
+    return summary;
+  } catch (error) {
+    if (error instanceof LspRequestTimeoutError) {
+      throw error;
+    }
+    const summary: BulkReferenceSummary = {
+      provider: provider.name,
+      status: "fallback",
+      occurrenceCount: occurrenceIds.size,
+      populatedOccurrenceCount: 0,
+      unresolvedOccurrenceCount: occurrenceIds.size,
+      failedOccurrenceCount: occurrenceIds.size,
+      elapsedMilliseconds: performance.now() - startedAt
+    };
+    onLog(
+      `[crawler] [warning] Bulk reference provider ${provider.name} failed; `
+      + `using standard LSP requests: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return summary;
   }
 }
 

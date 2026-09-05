@@ -61,6 +61,19 @@ export class LspResponseError extends Error {
   }
 }
 
+export class LspRequestTimeoutError extends Error {
+  public constructor(
+    public readonly method: string,
+    public readonly timeoutMilliseconds: number
+  ) {
+    super(
+      `Language server request ${method} timed out after `
+      + `${timeoutMilliseconds}ms.`
+    );
+    this.name = "LspRequestTimeoutError";
+  }
+}
+
 export class LspProcessClient {
   readonly #config: CrawlerConfig;
   readonly #onLog: (message: string) => void;
@@ -222,7 +235,11 @@ export class LspProcessClient {
       ));
   }
 
-  public request<T>(method: string, params?: unknown): Promise<T> {
+  public request<T>(
+    method: string,
+    params?: unknown,
+    timeoutMilliseconds = this.#config.requestTimeoutMilliseconds
+  ): Promise<T> {
     if (this.#fatalError !== undefined) {
       return Promise.reject(this.#fatalError);
     }
@@ -235,13 +252,18 @@ export class LspProcessClient {
         if (pending === undefined) {
           return;
         }
-        this.#pending.delete(id);
-        this.#recordRequest(pending, false);
-        reject(new Error(
-          `Language server request ${method} timed out after `
-          + `${this.#config.requestTimeoutMilliseconds}ms.`
-        ));
-      }, this.#config.requestTimeoutMilliseconds);
+        try {
+          this.#write(process, {
+            jsonrpc: "2.0",
+            method: "$/cancelRequest",
+            params: { id }
+          });
+        } finally {
+          this.#pending.delete(id);
+          this.#recordRequest(pending, false);
+          reject(new LspRequestTimeoutError(method, timeoutMilliseconds));
+        }
+      }, timeoutMilliseconds);
       this.#pending.set(id, {
         method,
         startedAt,

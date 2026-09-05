@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import {
   createWriteStream,
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -27,11 +28,13 @@ import {
   resolveRequiredSdkInstallation
 } from "./sdk-preflight.js";
 import { formatTimestampedLogEntry } from "./timestamped-log.js";
+import { createRoslynBulkReferenceProvider } from "./roslyn-bulk-references.js";
 
 interface Options {
   readonly workspaceRoot: string;
   readonly databasePath?: string;
   readonly concurrency: number;
+  readonly roslynBulkReferences: boolean;
 }
 
 interface Manifest {
@@ -51,6 +54,7 @@ interface Manifest {
   readonly timings: CrawlSummary["timings"];
   readonly recoveredRequestFailures: number;
   readonly requestStatistics: CrawlSummary["requestStatistics"];
+  readonly bulkReferences?: CrawlSummary["bulkReferences"];
 }
 
 function usage(): string {
@@ -61,6 +65,7 @@ function usage(): string {
     "  --workspace-root <path> Workspace root (or set WORKSPACE_ROOT)",
     "  --database <path>       Output database path",
     "  --concurrency <number>  Concurrent document crawls (default: 8)",
+    "  --roslyn-bulk-references Use the experimental Roslyn extension fast path",
     "  --help                  Show this help"
   ].join("\n");
 }
@@ -69,6 +74,7 @@ function parseOptions(args: readonly string[]): Options {
   let workspaceRoot = process.env["WORKSPACE_ROOT"];
   let databasePath: string | undefined;
   let concurrency = 8;
+  let roslynBulkReferences = false;
 
   for (let index = 0; index < args.length; index++) {
     const argument = args[index]!;
@@ -90,6 +96,9 @@ function parseOptions(args: readonly string[]): Options {
           argument
         );
         break;
+      case "--roslyn-bulk-references":
+        roslynBulkReferences = true;
+        break;
       default:
         throw new Error(`Unknown argument: ${argument}\n\n${usage()}`);
     }
@@ -103,6 +112,7 @@ function parseOptions(args: readonly string[]): Options {
   return {
     workspaceRoot: resolve(workspaceRoot),
     concurrency,
+    roslynBulkReferences,
     ...(databasePath === undefined
       ? {}
       : { databasePath: resolve(databasePath) })
@@ -112,6 +122,15 @@ function parseOptions(args: readonly string[]): Options {
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
   const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
+  const extensionAssemblyPath = resolve(
+    repositoryRoot,
+    "tools",
+    "roslyn-index-extension",
+    "bin",
+    "Release",
+    "netstandard2.0",
+    "Codewise.RoslynExtension.dll"
+  );
   statSync(resolve(repositoryRoot, ".config", "dotnet-tools.json"));
   const workspaceCommit = runCapture(
     "git",
@@ -203,6 +222,19 @@ async function main(): Promise<void> {
   console.log(
     `Log: ${logPath}${mirrorServerLogs ? " (mirrored to stderr in CI)" : ""}`
   );
+  const bulkReferenceProvider = options.roslynBulkReferences
+    && existsSync(extensionAssemblyPath)
+    ? createRoslynBulkReferenceProvider(
+        extensionAssemblyPath,
+        options.concurrency
+      )
+    : undefined;
+  if (options.roslynBulkReferences && bulkReferenceProvider === undefined) {
+    console.warn(
+      `Roslyn bulk reference extension not found at ${extensionAssemblyPath}; `
+      + "using standard LSP reference requests."
+    );
+  }
   const startedAt = performance.now();
   let summary: CrawlSummary;
   try {
@@ -231,7 +263,10 @@ async function main(): Promise<void> {
             + `(${rate} docs/s${estimate}); latest: ${progress.currentDocument}`
           );
         }
-      }
+      },
+      ...(bulkReferenceProvider === undefined
+        ? {}
+        : { bulkReferenceProvider })
     });
   } catch (error) {
     if (error instanceof CrawlError) {
@@ -268,7 +303,10 @@ async function main(): Promise<void> {
     statistics: summary.database,
     timings: summary.timings,
     recoveredRequestFailures: summary.recoveredRequestFailures,
-    requestStatistics: summary.requestStatistics
+    requestStatistics: summary.requestStatistics,
+    ...(summary.bulkReferences === undefined
+      ? {}
+      : { bulkReferences: summary.bulkReferences })
   };
   writeFileSync(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`, "utf8");
   console.log(
@@ -284,6 +322,25 @@ function printCrawlPerformance(summary: CrawlSummary): void {
     `Request failures: ${summary.requestFailures.toLocaleString()} crawl failure(s), `
     + `${summary.recoveredRequestFailures.toLocaleString()} recovered`
   );
+  if (summary.bulkReferences !== undefined) {
+    console.log(
+      `Bulk references (${summary.bulkReferences.provider}): `
+      + `${summary.bulkReferences.status}; `
+      + `${summary.bulkReferences.populatedOccurrenceCount.toLocaleString()}/`
+      + `${summary.bulkReferences.occurrenceCount.toLocaleString()} occurrence(s), `
+      + `${summary.bulkReferences.unresolvedOccurrenceCount.toLocaleString()} unresolved, `
+      + `${summary.bulkReferences.failedOccurrenceCount.toLocaleString()} failed`
+    );
+    for (const [name, value] of Object.entries(
+      summary.bulkReferences.metrics ?? {}
+    )) {
+      console.log(
+        `  ${name}: ${
+          name.endsWith("Count") ? value.toLocaleString() : formatDuration(value)
+        }`
+      );
+    }
+  }
   console.log("Timings:");
   console.log(
     `  Document discovery: ${formatDuration(summary.timings.documentDiscoveryMilliseconds)}`
@@ -299,6 +356,9 @@ function printCrawlPerformance(summary: CrawlSummary): void {
   );
   console.log(
     `  Candidate discovery: ${formatDuration(summary.timings.candidateDiscoveryMilliseconds)}`
+  );
+  console.log(
+    `  Bulk references: ${formatDuration(summary.timings.bulkReferenceMilliseconds)}`
   );
   console.log(
     `  Occurrence probing: ${formatDuration(summary.timings.occurrenceProbeMilliseconds)}`

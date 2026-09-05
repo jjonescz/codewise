@@ -10,6 +10,7 @@ const stuckProgress = process.argv.includes("--stuck-progress");
 const exitOnInitialize = process.argv.includes("--exit-on-initialize");
 const crossDocumentReferences =
   process.argv.includes("--cross-document-references");
+const hangReferences = process.argv.includes("--hang-references");
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
   readMessages();
@@ -98,6 +99,9 @@ function handleMessage(message) {
       respond(message.id, []);
       break;
     case "textDocument/references":
+      if (hangReferences) {
+        break;
+      }
       respond(message.id, locationsFor(message.params));
       break;
     case "textDocument/definition":

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageDownload
+      Include="Microsoft.CodeAnalysis.ExternalAccess.Extensions"
+      Version="[5.0.0-1.25277.114]" />
+    <PackageReference
+      Include="Microsoft.CodeAnalysis.Workspaces.Common"
+      Version="5.0.0-2.final"
+      PrivateAssets="all" />
+    <Reference
+      Include="Microsoft.CodeAnalysis.ExternalAccess.Extensions"
+      HintPath="$(NuGetPackageRoot)microsoft.codeanalysis.externalaccess.extensions/5.0.0-1.25277.114/lib/netstandard2.0/Microsoft.CodeAnalysis.ExternalAccess.Extensions.dll"
+      Private="false" />
+  </ItemGroup>
+
+</Project>
