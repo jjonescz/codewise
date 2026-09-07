@@ -76,26 +76,29 @@ The indexer probes up to eight documents concurrently by default and schedules
 documents with the most discovered occurrences first to avoid a large-file
 tail. Use `--concurrency` to tune this for the language server and machine.
 
-An experimental Roslyn-specific bulk reference path can be enabled with:
+An experimental Roslyn-specific inverted symbol graph can be enabled with:
 
 ```powershell
-npm run index:roslyn:bulk -- --workspace-root C:\path\to\roslyn
+npm run index:roslyn:symbols -- --workspace-root C:\path\to\roslyn
 ```
 
 This builds and activates `Codewise.RoslynExtension.dll` through Roslyn's
 extension-message API. The extension resolves C# and Visual Basic occurrence
-positions in one workspace request, deduplicates their `ISymbol` instances, and
-calls Roslyn's public `SymbolFinder.FindReferencesAsync` API. Other languages,
-unresolved occurrences, activation failures, and dispatch failures retain the
-standard LSP fallback.
+positions in one workspace request, normalizes and deduplicates their `ISymbol`
+instances, and returns occurrence-to-symbol edges plus source definitions.
+References are answered by reversing those edges in SQLite; the extension does
+not call `SymbolFinder.FindReferencesAsync`. Other languages, unresolved
+occurrences, external definitions, activation failures, and dispatch failures
+retain the standard LSP fallback.
 
 The option is experimental and is not the default. In the current benchmark,
-the extension's symbol binding took about 3 seconds and its reference searches
-took about 5.5 minutes, but the complete mixed C#/Razor crawl took about 22
-minutes versus 14.5 minutes on the standard path. The public `SymbolFinder` API
-also returned fewer workspace reference locations than Roslyn's LSP handler and
-uses different generated-document locations, so its output is not yet an exact
-replacement.
+the extension populated 31,555 of 31,843 C# occurrences with 10,435 symbol
+identities in about 15 seconds. The complete mixed C#/Razor crawl took 11
+minutes 37 seconds versus 14 minutes 31 seconds on the standard path, and the
+database was 41 MB instead of 291 MB. Exact symbol identity does not reproduce
+Roslyn's cascading Find All References semantics: comparison with the standard
+index found 1,086 reference sets split across graph symbols and 159 graph
+symbols spanning multiple standard reference sets.
 
 This command restores the pinned `roslyn-language-server` local tool
 automatically before starting the crawl. It also checks that the current

@@ -2,6 +2,7 @@ import type { SqlDatabase, SqlRow } from "./types.js";
 
 export const indexApplicationId = 0x43574958;
 export const indexSchemaVersion = 1;
+export const symbolGraphSchemaVersion = 2;
 
 export const createIndexSchemaSql = `
   PRAGMA application_id = ${indexApplicationId};
@@ -96,7 +97,42 @@ export const createIndexSchemaSql = `
   ON CONFLICT (key) DO NOTHING;
 `;
 
-const expectedTables = new Set([
+export const createSymbolGraphSchemaSql = `
+  UPDATE metadata
+  SET value = '${symbolGraphSchemaVersion}'
+  WHERE key = 'schema_version';
+
+  CREATE TABLE IF NOT EXISTS symbols (
+    id INTEGER PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_key TEXT NOT NULL,
+    display_name TEXT,
+    UNIQUE (provider, provider_key)
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS occurrence_symbols (
+    occurrence_id INTEGER PRIMARY KEY
+      REFERENCES occurrences(id) ON DELETE CASCADE,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    is_definition INTEGER NOT NULL CHECK (is_definition IN (0, 1))
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS occurrence_symbols_by_symbol
+    ON occurrence_symbols (symbol_id, occurrence_id);
+
+  CREATE TABLE IF NOT EXISTS symbol_definitions (
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    uri TEXT NOT NULL,
+    start_line INTEGER NOT NULL CHECK (start_line >= 0),
+    start_character INTEGER NOT NULL CHECK (start_character >= 0),
+    end_line INTEGER NOT NULL CHECK (end_line >= 0),
+    end_character INTEGER NOT NULL CHECK (end_character >= 0),
+    PRIMARY KEY (symbol_id, ordinal)
+  ) STRICT;
+`;
+
+const baseTables = new Set([
   "answer_locations",
   "answer_sets",
   "documents",
@@ -104,6 +140,11 @@ const expectedTables = new Set([
   "metadata",
   "occurrence_answers",
   "occurrences"
+]);
+const symbolGraphTables = new Set([
+  "occurrence_symbols",
+  "symbol_definitions",
+  "symbols"
 ]);
 
 export class CodeIndexValidationError extends Error {
@@ -127,11 +168,21 @@ export function validateIndexDatabase(database: SqlDatabase): void {
   const version = database.all(
     "SELECT value FROM metadata WHERE key = 'schema_version'"
   )[0]?.["value"];
-  if (version !== String(indexSchemaVersion)) {
+  if (
+    version !== String(indexSchemaVersion)
+    && version !== String(symbolGraphSchemaVersion)
+  ) {
     throw new CodeIndexValidationError(
       `Unsupported Codewise index schema version ${String(version ?? "missing")}.`
     );
   }
+  const hasSymbolGraph = version === String(symbolGraphSchemaVersion);
+  const expectedTables = hasSymbolGraph
+    ? new Set([...baseTables, ...symbolGraphTables])
+    : baseTables;
+  const expectedIndexes = hasSymbolGraph
+    ? new Set(["occurrences_by_position", "occurrence_symbols_by_symbol"])
+    : new Set(["occurrences_by_position"]);
 
   const schemaObjects = database.all(`
     SELECT name, type, sql
@@ -157,7 +208,7 @@ export function validateIndexDatabase(database: SqlDatabase): void {
       }
       actualTables.add(name);
     } else if (type === "index") {
-      if (name !== "occurrences_by_position") {
+      if (!expectedIndexes.has(name)) {
         throw new CodeIndexValidationError(
           `The index contains unexpected index ${name}.`
         );

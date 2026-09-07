@@ -163,8 +163,8 @@ describe("crawlWorkspace", () => {
     }
   });
 
-  it("uses a bulk reference provider and falls back when it fails", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-bulk-"));
+  it("uses a symbol graph provider and falls back when it fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-symbols-"));
     try {
       const content = "let value = 1;\nprint(value);\n";
       await writeFile(join(directory, "sample.toy"), content);
@@ -188,42 +188,50 @@ describe("crawlWorkspace", () => {
         settleMilliseconds: 0,
         lexicalFallback: false
       };
-      const bulkDatabasePath = join(directory, "bulk.db");
-      const bulkSummary = await crawlWorkspace(config, bulkDatabasePath, {
-        bulkReferenceProvider: {
+      const graphDatabasePath = join(directory, "graph.db");
+      const graphSummary = await crawlWorkspace(config, graphDatabasePath, {
+        symbolGraphProvider: {
           name: "test-provider",
           languageIds: new Set(["toy"]),
-          async populateReferences(_client, documents) {
+          async populateSymbolGraph(_client, documents) {
             const occurrences = documents.flatMap(
               (document) => document.occurrences
             );
             return {
-              groups: [{
-                occurrenceIds: occurrences.map((occurrence) => occurrence.id),
-                locations: occurrences.map((occurrence) => ({
+              symbols: [{
+                providerKey: "value",
+                displayName: "value",
+                occurrences: occurrences.map((occurrence, index) => ({
+                  occurrenceId: occurrence.id,
+                  isDefinition: index === 0
+                })),
+                definitions: [{
                   uri: documents[0]!.uri,
-                  range: {
-                    start: occurrence.position,
-                    end: {
-                      line: occurrence.position.line,
-                      character: occurrence.position.character + 1
-                    }
-                  }
-                }))
+                  range: occurrences[0]!.range
+                }]
               }],
-              unresolvedOccurrenceCount: 0,
-              failedOccurrenceCount: 0
+              unresolvedOccurrenceIds: []
             };
           }
         }
       });
-      expect(bulkSummary.bulkReferences).toMatchObject({
+      expect(graphSummary.symbolGraph).toMatchObject({
         provider: "test-provider",
         status: "used",
-        populatedOccurrenceCount: 3
+        populatedOccurrenceCount: 3,
+        symbolCount: 1
       });
       expect((await methodCounts(join(directory, "server.log")))
         .get("textDocument/references") ?? 0).toBe(0);
+      expect((await methodCounts(join(directory, "server.log")))
+        .get("textDocument/definition") ?? 0).toBe(0);
+      const index = openIndex(graphDatabasePath);
+      expect(index.references(
+        "sample.toy",
+        { line: 1, character: 7 },
+        true
+      )).toHaveLength(3);
+      index.close();
 
       const fallbackLogPath = join(directory, "fallback.log");
       const fallbackSummary = await crawlWorkspace(
@@ -234,24 +242,31 @@ describe("crawlWorkspace", () => {
             args: [serverPath, fallbackLogPath]
           }
         },
-        join(directory, "fallback.db"),
+        graphDatabasePath,
         {
-          bulkReferenceProvider: {
+          symbolGraphProvider: {
             name: "failing-provider",
             languageIds: new Set(["toy"]),
-            populateReferences() {
-              throw new Error("Expected provider failure.");
+            populateSymbolGraph() {
+              throw new LspRequestTimeoutError("test/symbolGraph", 10);
             }
           }
         }
       );
-      expect(fallbackSummary.bulkReferences).toMatchObject({
+      expect(fallbackSummary.symbolGraph).toMatchObject({
         provider: "failing-provider",
         status: "fallback",
         populatedOccurrenceCount: 0
       });
       expect((await methodCounts(fallbackLogPath))
         .get("textDocument/references")).toBeGreaterThan(0);
+      const fallbackDatabase = new DatabaseSync(graphDatabasePath, {
+        readOnly: true
+      });
+      expect(fallbackDatabase.prepare(
+        "SELECT COUNT(*) AS count FROM occurrence_symbols"
+      ).get()).toMatchObject({ count: 0 });
+      fallbackDatabase.close();
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

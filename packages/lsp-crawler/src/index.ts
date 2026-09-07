@@ -14,16 +14,17 @@ export {
   crawlWorkspace,
   discoverWorkspaceDocuments,
   CrawlError,
-  type BulkReferenceDocument,
-  type BulkReferenceGroup,
-  type BulkReferenceOccurrence,
-  type BulkReferenceProvider,
-  type BulkReferenceResult,
-  type BulkReferenceSummary,
   type CrawlOptions,
   type CrawlProgress,
   type CrawlSummary,
-  type CrawlTimings
+  type CrawlTimings,
+  type SymbolGraphDocument,
+  type SymbolGraphEdge,
+  type SymbolGraphOccurrence,
+  type SymbolGraphProvider,
+  type SymbolGraphResult,
+  type SymbolGraphSummary,
+  type SymbolGraphSymbol
 } from "./crawler.js";
 export {
   CrawlerDatabase,
@@ -32,7 +33,9 @@ export {
   type LocationAnswerKind,
   type OccurrenceInput,
   type OccurrenceRecord,
-  type SharedLocationAnswerInput
+  type SharedLocationAnswerInput,
+  type SymbolGraphInput,
+  type SymbolGraphOccurrenceInput
 } from "./database.js";
 export {
   type Location,

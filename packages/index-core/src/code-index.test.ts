@@ -1,7 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { CodeIndex } from "./code-index.js";
-import { createIndexSchemaSql } from "./schema.js";
+import {
+  createIndexSchemaSql,
+  createSymbolGraphSchemaSql
+} from "./schema.js";
 import type { SqlDatabase, SqlRow, SqlValue } from "./types.js";
 
 describe("CodeIndex", () => {
@@ -43,6 +46,67 @@ describe("CodeIndex", () => {
     const index = new CodeIndex(new TestSqlDatabase(database));
     expect(index.hover("src/Widget.cs", { line: 3, character: 9 })?.contents)
       .toEqual({ kind: "markdown", value: "Nested hover" });
+    index.close();
+  });
+
+  it("prefers inverted symbol graph answers when available", () => {
+    const database = createFixtureDatabase();
+    database.exec(`
+      ${createSymbolGraphSchemaSql}
+      INSERT INTO symbols (id, provider, provider_key, display_name)
+      VALUES (1, 'test', 'widget', 'Widget');
+      INSERT INTO occurrence_symbols (
+        occurrence_id, symbol_id, is_definition
+      ) VALUES
+        (1, 1, 1),
+        (2, 1, 0);
+      INSERT INTO symbol_definitions (
+        symbol_id, ordinal, uri, start_line, start_character,
+        end_line, end_character
+      ) VALUES (
+        1, 0, 'file:///crawler/src/Widget.cs', 0, 13, 0, 19
+      );
+      DELETE FROM occurrence_answers;
+      DELETE FROM answer_locations;
+      DELETE FROM answer_sets;
+    `);
+    const index = new CodeIndex(new TestSqlDatabase(database));
+
+    expect(index.definition("src/Widget.cs", { line: 3, character: 13 }))
+      .toEqual([{
+        relativePath: "src/Widget.cs",
+        range: {
+          start: { line: 0, character: 13 },
+          end: { line: 0, character: 19 }
+        }
+      }]);
+    expect(index.references(
+      "src/Widget.cs",
+      { line: 3, character: 13 },
+      false
+    )).toEqual([{
+      relativePath: "src/Widget.cs",
+      range: {
+        start: { line: 3, character: 8 },
+        end: { line: 3, character: 14 }
+      }
+    }]);
+    expect(index.references(
+      "src/Widget.cs",
+      { line: 3, character: 13 },
+      true
+    )).toHaveLength(2);
+    index.close();
+  });
+
+  it("accepts schema version one indexes without symbol graph tables", () => {
+    const database = createFixtureDatabase();
+    const index = new CodeIndex(new TestSqlDatabase(database));
+    expect(index.references(
+      "src/Widget.cs",
+      { line: 3, character: 13 },
+      true
+    )).toHaveLength(2);
     index.close();
   });
 });

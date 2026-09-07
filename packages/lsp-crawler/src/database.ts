@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import {
   createIndexSchemaSql,
+  createSymbolGraphSchemaSql,
   validateIndexDatabase,
   type IndexStatistics,
   type SqlDatabase,
@@ -48,6 +49,18 @@ export interface SharedLocationAnswerInput {
   readonly occurrenceIds: readonly number[];
   readonly kind: LocationAnswerKind;
   readonly locations: readonly Location[];
+}
+
+export interface SymbolGraphInput {
+  readonly providerKey: string;
+  readonly displayName?: string;
+  readonly occurrences: readonly SymbolGraphOccurrenceInput[];
+  readonly definitions: readonly Location[];
+}
+
+export interface SymbolGraphOccurrenceInput {
+  readonly occurrenceId: number;
+  readonly isDefinition: boolean;
 }
 
 interface RowWithId {
@@ -149,6 +162,12 @@ export class CrawlerDatabase {
           DELETE FROM hover_results;
           DELETE FROM answer_sets;
         `);
+        if (this.#hasSymbolGraphSchema()) {
+          this.#database.exec(`
+            DELETE FROM occurrence_symbols;
+            DELETE FROM symbols;
+          `);
+        }
       }
       const deleteOccurrences = this.#database.prepare(
         "DELETE FROM occurrences WHERE document_id = ?"
@@ -277,11 +296,142 @@ export class CrawlerDatabase {
     occurrenceId: number,
     kind: LocationAnswerKind
   ): boolean {
-    return this.#database.prepare(`
+    if (this.#database.prepare(`
       SELECT 1
       FROM occurrence_answers
       WHERE occurrence_id = ? AND kind = ? AND status = 'complete'
-    `).get(occurrenceId, kind) !== undefined;
+    `).get(occurrenceId, kind) !== undefined) {
+      return true;
+    }
+    if (
+      this.#hasSymbolGraphSchema()
+      && (kind === "references" || kind === "highlights")
+    ) {
+      return this.#database.prepare(`
+        SELECT 1 FROM occurrence_symbols WHERE occurrence_id = ?
+      `).get(occurrenceId) !== undefined;
+    }
+    if (this.#hasSymbolGraphSchema() && kind === "definition") {
+      return this.#database.prepare(`
+        SELECT 1
+        FROM occurrence_symbols AS edge
+        JOIN symbol_definitions AS definition
+          ON definition.symbol_id = edge.symbol_id
+        WHERE edge.occurrence_id = ?
+        LIMIT 1
+      `).get(occurrenceId) !== undefined;
+    }
+    return false;
+  }
+
+  public saveSymbolGraph(
+    provider: string,
+    occurrenceIds: readonly number[],
+    symbols: readonly SymbolGraphInput[]
+  ): void {
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      this.#database.exec(createSymbolGraphSchemaSql);
+      const deleteEdge = this.#database.prepare(
+        "DELETE FROM occurrence_symbols WHERE occurrence_id = ?"
+      );
+      for (const occurrenceId of occurrenceIds) {
+        deleteEdge.run(occurrenceId);
+      }
+      this.#deleteGraphDerivedAnswers(occurrenceIds);
+      this.#deleteOrphanedSymbols();
+      const insertSymbol = this.#database.prepare(`
+        INSERT INTO symbols (provider, provider_key, display_name)
+        VALUES (?, ?, ?)
+        ON CONFLICT (provider, provider_key) DO UPDATE SET
+          display_name = excluded.display_name
+      `);
+      const selectSymbol = this.#database.prepare(`
+        SELECT id FROM symbols WHERE provider = ? AND provider_key = ?
+      `);
+      const insertEdge = this.#database.prepare(`
+        INSERT INTO occurrence_symbols (
+          occurrence_id, symbol_id, is_definition
+        )
+        VALUES (?, ?, ?)
+        ON CONFLICT (occurrence_id) DO UPDATE SET
+          symbol_id = excluded.symbol_id,
+          is_definition = excluded.is_definition
+      `);
+      const insertDefinition = this.#database.prepare(`
+        INSERT INTO symbol_definitions (
+          symbol_id,
+          ordinal,
+          uri,
+          start_line,
+          start_character,
+          end_line,
+          end_character
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const symbol of symbols) {
+        if (symbol.occurrences.length === 0) {
+          throw new Error("Symbol graph entries require at least one occurrence.");
+        }
+        insertSymbol.run(
+          provider,
+          symbol.providerKey,
+          symbol.displayName ?? null
+        );
+        const symbolId = requiredRow<RowWithId>(
+          selectSymbol,
+          provider,
+          symbol.providerKey
+        ).id;
+        this.#database.prepare(
+          "DELETE FROM symbol_definitions WHERE symbol_id = ?"
+        ).run(symbolId);
+        for (const occurrence of symbol.occurrences) {
+          insertEdge.run(
+            occurrence.occurrenceId,
+            symbolId,
+            occurrence.isDefinition ? 1 : 0
+          );
+        }
+        normalizeLocations(symbol.definitions).forEach((definition, ordinal) => {
+          insertDefinition.run(
+            symbolId,
+            ordinal,
+            definition.uri,
+            definition.range.start.line,
+            definition.range.start.character,
+            definition.range.end.line,
+            definition.range.end.character
+          );
+        });
+      }
+      this.#database.exec("COMMIT");
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  public clearSymbolGraph(occurrenceIds: readonly number[]): void {
+    if (!this.#hasSymbolGraphSchema()) {
+      return;
+    }
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const deleteEdge = this.#database.prepare(
+        "DELETE FROM occurrence_symbols WHERE occurrence_id = ?"
+      );
+      for (const occurrenceId of occurrenceIds) {
+        deleteEdge.run(occurrenceId);
+      }
+      this.#deleteGraphDerivedAnswers(occurrenceIds);
+      this.#deleteOrphanedSymbols();
+      this.#database.exec("COMMIT");
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   public saveLocationAnswer(
@@ -403,6 +553,7 @@ export class CrawlerDatabase {
       `).run(answerSet.id, answerSet.id);
     } else if (kind === "definition" || kind === "declaration") {
       for (const occurrenceId of occurrenceIds) {
+        this.#propagateAcrossSymbol(occurrenceId, kind, answerSet.id);
         this.#propagateAcrossReferenceSet(occurrenceId, kind, answerSet.id);
       }
     } else if (kind === "highlights") {
@@ -596,6 +747,65 @@ export class CrawlerDatabase {
         )
       ON CONFLICT (occurrence_id, kind) DO NOTHING
     `).run(kind, answerSetId, occurrenceId);
+  }
+
+  #propagateAcrossSymbol(
+    occurrenceId: number,
+    kind: LocationAnswerKind,
+    answerSetId: number
+  ): void {
+    if (!this.#hasSymbolGraphSchema()) {
+      return;
+    }
+    this.#database.prepare(`
+      INSERT INTO occurrence_answers (
+        occurrence_id, kind, answer_set_id, status, attempt_count
+      )
+      SELECT sibling.occurrence_id, ?, ?, 'complete', 1
+      FROM occurrence_symbols AS source
+      JOIN occurrence_symbols AS sibling
+        ON sibling.symbol_id = source.symbol_id
+      WHERE source.occurrence_id = ?
+      ON CONFLICT (occurrence_id, kind) DO NOTHING
+    `).run(kind, answerSetId, occurrenceId);
+  }
+
+  #hasSymbolGraphSchema(): boolean {
+    return this.#database.prepare(`
+      SELECT 1
+      FROM sqlite_schema
+      WHERE type = 'table' AND name = 'occurrence_symbols'
+    `).get() !== undefined;
+  }
+
+  #deleteOrphanedSymbols(): void {
+    this.#database.exec(`
+      DELETE FROM symbols
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM occurrence_symbols
+        WHERE occurrence_symbols.symbol_id = symbols.id
+      )
+    `);
+  }
+
+  #deleteGraphDerivedAnswers(occurrenceIds: readonly number[]): void {
+    const deleteAnswer = this.#database.prepare(`
+      DELETE FROM occurrence_answers
+      WHERE occurrence_id = ?
+        AND kind IN ('definition', 'declaration')
+    `);
+    for (const occurrenceId of occurrenceIds) {
+      deleteAnswer.run(occurrenceId);
+    }
+    this.#database.exec(`
+      DELETE FROM answer_sets
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM occurrence_answers
+        WHERE occurrence_answers.answer_set_id = answer_sets.id
+      )
+    `);
   }
 
   #propagateHighlightsWithinDocument(

@@ -28,13 +28,13 @@ import {
   resolveRequiredSdkInstallation
 } from "./sdk-preflight.js";
 import { formatTimestampedLogEntry } from "./timestamped-log.js";
-import { createRoslynBulkReferenceProvider } from "./roslyn-bulk-references.js";
+import { createRoslynSymbolGraphProvider } from "./roslyn-symbol-graph.js";
 
 interface Options {
   readonly workspaceRoot: string;
   readonly databasePath?: string;
   readonly concurrency: number;
-  readonly roslynBulkReferences: boolean;
+  readonly roslynSymbolGraph: boolean;
 }
 
 interface Manifest {
@@ -54,7 +54,7 @@ interface Manifest {
   readonly timings: CrawlSummary["timings"];
   readonly recoveredRequestFailures: number;
   readonly requestStatistics: CrawlSummary["requestStatistics"];
-  readonly bulkReferences?: CrawlSummary["bulkReferences"];
+  readonly symbolGraph?: CrawlSummary["symbolGraph"];
 }
 
 function usage(): string {
@@ -65,7 +65,7 @@ function usage(): string {
     "  --workspace-root <path> Workspace root (or set WORKSPACE_ROOT)",
     "  --database <path>       Output database path",
     "  --concurrency <number>  Concurrent document crawls (default: 8)",
-    "  --roslyn-bulk-references Use the experimental Roslyn extension fast path",
+    "  --roslyn-symbol-graph   Use the experimental inverted Roslyn symbol graph",
     "  --help                  Show this help"
   ].join("\n");
 }
@@ -74,7 +74,7 @@ function parseOptions(args: readonly string[]): Options {
   let workspaceRoot = process.env["WORKSPACE_ROOT"];
   let databasePath: string | undefined;
   let concurrency = 8;
-  let roslynBulkReferences = false;
+  let roslynSymbolGraph = false;
 
   for (let index = 0; index < args.length; index++) {
     const argument = args[index]!;
@@ -96,8 +96,8 @@ function parseOptions(args: readonly string[]): Options {
           argument
         );
         break;
-      case "--roslyn-bulk-references":
-        roslynBulkReferences = true;
+      case "--roslyn-symbol-graph":
+        roslynSymbolGraph = true;
         break;
       default:
         throw new Error(`Unknown argument: ${argument}\n\n${usage()}`);
@@ -112,7 +112,7 @@ function parseOptions(args: readonly string[]): Options {
   return {
     workspaceRoot: resolve(workspaceRoot),
     concurrency,
-    roslynBulkReferences,
+    roslynSymbolGraph,
     ...(databasePath === undefined
       ? {}
       : { databasePath: resolve(databasePath) })
@@ -205,7 +205,10 @@ async function main(): Promise<void> {
     documents: [
       { languageId: "csharp", extensions: [".cs"] },
       { languageId: "vb", extensions: [".vb"] },
-      { languageId: "razor", extensions: [".razor", ".cshtml"] }
+      {
+        languageId: "aspnetcorerazor",
+        extensions: [".razor", ".cshtml"]
+      }
     ],
     concurrency: options.concurrency,
     requestTimeoutMilliseconds: 300_000,
@@ -222,16 +225,13 @@ async function main(): Promise<void> {
   console.log(
     `Log: ${logPath}${mirrorServerLogs ? " (mirrored to stderr in CI)" : ""}`
   );
-  const bulkReferenceProvider = options.roslynBulkReferences
+  const symbolGraphProvider = options.roslynSymbolGraph
     && existsSync(extensionAssemblyPath)
-    ? createRoslynBulkReferenceProvider(
-        extensionAssemblyPath,
-        options.concurrency
-      )
+    ? createRoslynSymbolGraphProvider(extensionAssemblyPath)
     : undefined;
-  if (options.roslynBulkReferences && bulkReferenceProvider === undefined) {
+  if (options.roslynSymbolGraph && symbolGraphProvider === undefined) {
     console.warn(
-      `Roslyn bulk reference extension not found at ${extensionAssemblyPath}; `
+      `Roslyn symbol graph extension not found at ${extensionAssemblyPath}; `
       + "using standard LSP reference requests."
     );
   }
@@ -264,9 +264,9 @@ async function main(): Promise<void> {
           );
         }
       },
-      ...(bulkReferenceProvider === undefined
+      ...(symbolGraphProvider === undefined
         ? {}
-        : { bulkReferenceProvider })
+        : { symbolGraphProvider })
     });
   } catch (error) {
     if (error instanceof CrawlError) {
@@ -304,9 +304,9 @@ async function main(): Promise<void> {
     timings: summary.timings,
     recoveredRequestFailures: summary.recoveredRequestFailures,
     requestStatistics: summary.requestStatistics,
-    ...(summary.bulkReferences === undefined
+    ...(summary.symbolGraph === undefined
       ? {}
-      : { bulkReferences: summary.bulkReferences })
+      : { symbolGraph: summary.symbolGraph })
   };
   writeFileSync(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`, "utf8");
   console.log(
@@ -322,17 +322,17 @@ function printCrawlPerformance(summary: CrawlSummary): void {
     `Request failures: ${summary.requestFailures.toLocaleString()} crawl failure(s), `
     + `${summary.recoveredRequestFailures.toLocaleString()} recovered`
   );
-  if (summary.bulkReferences !== undefined) {
+  if (summary.symbolGraph !== undefined) {
     console.log(
-      `Bulk references (${summary.bulkReferences.provider}): `
-      + `${summary.bulkReferences.status}; `
-      + `${summary.bulkReferences.populatedOccurrenceCount.toLocaleString()}/`
-      + `${summary.bulkReferences.occurrenceCount.toLocaleString()} occurrence(s), `
-      + `${summary.bulkReferences.unresolvedOccurrenceCount.toLocaleString()} unresolved, `
-      + `${summary.bulkReferences.failedOccurrenceCount.toLocaleString()} failed`
+      `Symbol graph (${summary.symbolGraph.provider}): `
+      + `${summary.symbolGraph.status}; `
+      + `${summary.symbolGraph.populatedOccurrenceCount.toLocaleString()}/`
+      + `${summary.symbolGraph.occurrenceCount.toLocaleString()} occurrence(s), `
+      + `${summary.symbolGraph.symbolCount.toLocaleString()} symbol(s), `
+      + `${summary.symbolGraph.unresolvedOccurrenceCount.toLocaleString()} unresolved`
     );
     for (const [name, value] of Object.entries(
-      summary.bulkReferences.metrics ?? {}
+      summary.symbolGraph.metrics ?? {}
     )) {
       console.log(
         `  ${name}: ${
@@ -358,7 +358,7 @@ function printCrawlPerformance(summary: CrawlSummary): void {
     `  Candidate discovery: ${formatDuration(summary.timings.candidateDiscoveryMilliseconds)}`
   );
   console.log(
-    `  Bulk references: ${formatDuration(summary.timings.bulkReferenceMilliseconds)}`
+    `  Symbol graph: ${formatDuration(summary.timings.symbolGraphMilliseconds)}`
   );
   console.log(
     `  Occurrence probing: ${formatDuration(summary.timings.occurrenceProbeMilliseconds)}`

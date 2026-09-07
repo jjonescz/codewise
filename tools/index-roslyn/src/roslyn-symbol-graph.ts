@@ -1,26 +1,40 @@
 import {
-  type BulkReferenceGroup,
-  type BulkReferenceProvider,
-  type BulkReferenceResult,
-  type Location
+  type Location,
+  type SymbolGraphProvider,
+  type SymbolGraphResult,
+  type SymbolGraphSymbol
 } from "@codewise/lsp-crawler";
 
-const protocolVersion = 1;
-const handlerName = "Codewise.RoslynExtension.BulkReferencesHandler";
+const protocolVersion = 2;
+const handlerName = "Codewise.RoslynExtension.SymbolGraphHandler";
 const activationMethod = "server/_vs_activateExtension";
 const dispatchMethod = "workspace/_vs_dispatchExtensionMessage";
-const bulkRequestTimeoutMilliseconds = 30 * 60_000;
+const requestTimeoutMilliseconds = 5 * 60_000;
+const projectInitializationTimeoutMilliseconds = 10_000;
 const projectLoadRetryMilliseconds = 2_000;
-const projectLoadAttempts = 3;
+const projectLoadAttempts = 15;
 
-export function createRoslynBulkReferenceProvider(
-  assemblyFilePath: string,
-  maxConcurrency: number
-): BulkReferenceProvider {
+export function createRoslynSymbolGraphProvider(
+  assemblyFilePath: string
+): SymbolGraphProvider {
   return {
-    name: "roslyn-extension",
+    name: "roslyn-symbol-graph",
     languageIds: new Set(["csharp", "vb"]),
-    async populateReferences(client, documents): Promise<BulkReferenceResult> {
+    async populateSymbolGraph(client, documents): Promise<SymbolGraphResult> {
+      const occurrenceCount = documents.reduce(
+        (count, document) => count + document.occurrences.length,
+        0
+      );
+      if (occurrenceCount === 0) {
+        return {
+          symbols: [],
+          unresolvedOccurrenceIds: []
+        };
+      }
+      const projectInitializationCompleted = await client.waitForNotification(
+        "workspace/projectInitializationComplete",
+        projectInitializationTimeoutMilliseconds
+      );
       const activation = parseActivationResponse(
         await client.request<unknown>(
           activationMethod,
@@ -40,24 +54,25 @@ export function createRoslynBulkReferenceProvider(
         );
       }
 
-      const occurrenceCount = documents.reduce(
-        (count, document) => count + document.occurrences.length,
-        0
-      );
-      for (let attempt = 1; attempt <= projectLoadAttempts; attempt++) {
-        const result = await dispatchBulkRequest();
+      const attempts = projectInitializationCompleted ? projectLoadAttempts : 1;
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        const result = await dispatchSymbolGraphRequest();
         if (
-          result.groups.length > 0
-          || result.unresolvedOccurrenceCount < occurrenceCount
-          || attempt === projectLoadAttempts
+          result.symbols.length > 0
+          || result.unresolvedOccurrenceIds.length < occurrenceCount
         ) {
           return result;
         }
+        if (attempt === attempts) {
+          throw new Error(
+            "Roslyn did not load any requested documents for symbol binding."
+          );
+        }
         await delay(projectLoadRetryMilliseconds);
       }
-      throw new Error("Roslyn bulk reference retry loop did not return a result.");
+      throw new Error("Roslyn symbol graph retry loop did not return a result.");
 
-      async function dispatchBulkRequest(): Promise<BulkReferenceResult> {
+      async function dispatchSymbolGraphRequest(): Promise<SymbolGraphResult> {
         const response = parseDispatchResponse(
           await client.request<unknown>(
             dispatchMethod,
@@ -65,18 +80,19 @@ export function createRoslynBulkReferenceProvider(
               messageName: handlerName,
               message: JSON.stringify({
                 ProtocolVersion: protocolVersion,
-                MaxConcurrency: maxConcurrency,
                 Documents: documents.map((document) => ({
                   Uri: document.uri,
                   Occurrences: document.occurrences.map((occurrence) => ({
                     Id: occurrence.id,
-                    Line: occurrence.position.line,
-                    Character: occurrence.position.character
+                    StartLine: occurrence.range.start.line,
+                    StartCharacter: occurrence.range.start.character,
+                    EndLine: occurrence.range.end.line,
+                    EndCharacter: occurrence.range.end.character
                   }))
                 }))
               })
             },
-            bulkRequestTimeoutMilliseconds
+            requestTimeoutMilliseconds
           )
         );
         if (response.extensionWasUnloaded) {
@@ -92,7 +108,7 @@ export function createRoslynBulkReferenceProvider(
         if (response.response === undefined) {
           throw new Error("The Codewise extension returned no response.");
         }
-        return parseBulkResponse(response.response);
+        return parseSymbolGraphResponse(response.response);
       }
     }
   };
@@ -146,51 +162,59 @@ function parseDispatchResponse(value: unknown): {
   };
 }
 
-function parseBulkResponse(json: string): BulkReferenceResult {
+function parseSymbolGraphResponse(json: string): SymbolGraphResult {
   const value: unknown = JSON.parse(json);
   if (
     !isObject(value)
     || value["ProtocolVersion"] !== protocolVersion
-    || !Array.isArray(value["Groups"])
+    || !Array.isArray(value["Symbols"])
     || !isNumberArray(value["UnresolvedOccurrenceIds"])
     || !isNonNegativeInteger(value["SolutionProjectCount"])
     || !isNonNegativeInteger(value["SolutionDocumentCount"])
-    || typeof value["SymbolResolutionMilliseconds"] !== "number"
-    || typeof value["ReferenceSearchMilliseconds"] !== "number"
+    || !isNonNegativeNumber(value["SymbolResolutionMilliseconds"])
   ) {
-    throw new Error("The Codewise extension returned an invalid bulk response.");
-  }
-
-  const groups: BulkReferenceGroup[] = [];
-  let failedOccurrenceCount = 0;
-  for (const group of value["Groups"]) {
-    if (
-      !isObject(group)
-      || !isNumberArray(group["OccurrenceIds"])
-      || !Array.isArray(group["Locations"])
-    ) {
-      throw new Error("The Codewise extension returned an invalid reference group.");
-    }
-    if (typeof group["Error"] === "string" && group["Error"].length > 0) {
-      failedOccurrenceCount += group["OccurrenceIds"].length;
-      continue;
-    }
-    groups.push({
-      occurrenceIds: group["OccurrenceIds"],
-      locations: group["Locations"].map(parseLocation)
-    });
+    throw new Error("The Codewise extension returned an invalid symbol graph.");
   }
 
   return {
-    groups,
-    unresolvedOccurrenceCount: value["UnresolvedOccurrenceIds"].length,
-    failedOccurrenceCount,
+    symbols: value["Symbols"].map(parseSymbol),
+    unresolvedOccurrenceIds: value["UnresolvedOccurrenceIds"],
     metrics: {
       solutionProjectCount: value["SolutionProjectCount"],
       solutionDocumentCount: value["SolutionDocumentCount"],
-      symbolResolutionMilliseconds: value["SymbolResolutionMilliseconds"],
-      referenceSearchMilliseconds: value["ReferenceSearchMilliseconds"]
+      symbolResolutionMilliseconds: value["SymbolResolutionMilliseconds"]
     }
+  };
+}
+
+function parseSymbol(value: unknown): SymbolGraphSymbol {
+  if (
+    !isObject(value)
+    || typeof value["ProviderKey"] !== "string"
+    || value["ProviderKey"].length === 0
+    || typeof value["DisplayName"] !== "string"
+    || !Array.isArray(value["Occurrences"])
+    || !Array.isArray(value["Definitions"])
+  ) {
+    throw new Error("The Codewise extension returned an invalid symbol.");
+  }
+  return {
+    providerKey: value["ProviderKey"],
+    displayName: value["DisplayName"],
+    occurrences: value["Occurrences"].map((edge) => {
+      if (
+        !isObject(edge)
+        || !isNonNegativeInteger(edge["OccurrenceId"])
+        || typeof edge["IsDefinition"] !== "boolean"
+      ) {
+        throw new Error("The Codewise extension returned an invalid symbol edge.");
+      }
+      return {
+        occurrenceId: edge["OccurrenceId"],
+        isDefinition: edge["IsDefinition"]
+      };
+    }),
+    definitions: value["Definitions"].map(parseLocation)
   };
 }
 
@@ -237,12 +261,18 @@ function isStringArray(value: unknown): value is string[] {
 
 function isNumberArray(value: unknown): value is number[] {
   return Array.isArray(value)
-    && value.every((item) => Number.isSafeInteger(item) && item >= 0);
+    && value.every((item) => isNonNegativeInteger(item));
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number"
     && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
+function isNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isFinite(value)
     && value >= 0;
 }
 

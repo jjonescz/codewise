@@ -20,6 +20,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@codewise/index-core": "0.0.1"
+    "@codewise/index-core": "0.0.1",
+    "minimatch": "^10.2.6"
   }
 }

@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { minimatch } from "minimatch";
 import type { CrawlerConfig } from "./config.js";
 import {
   isObject,
@@ -24,6 +25,11 @@ interface RequestAccumulator {
   succeeded: number;
   failed: number;
   readonly durations: number[];
+}
+
+interface DynamicRegistration {
+  readonly id: string;
+  readonly registerOptions: unknown;
 }
 
 export interface LspRequestStatistics {
@@ -78,8 +84,13 @@ export class LspProcessClient {
   readonly #config: CrawlerConfig;
   readonly #onLog: (message: string) => void;
   readonly #pending = new Map<number, PendingRequest>();
-  readonly #dynamicRegistrations = new Map<string, unknown>();
+  readonly #dynamicRegistrations = new Map<string, DynamicRegistration[]>();
   readonly #activeProgress = new Set<string>();
+  readonly #receivedNotifications = new Set<string>();
+  readonly #notificationWaiters = new Map<
+    string,
+    Set<(received: boolean) => void>
+  >();
   readonly #requestStatistics = new Map<string, RequestAccumulator>();
   #process: ChildProcessWithoutNullStreams | undefined;
   #buffer = Buffer.alloc(0);
@@ -171,11 +182,15 @@ export class LspProcessClient {
       throw new Error("Language server returned an invalid initialize result.");
     }
     this.#initializeResult = result as unknown as InitializeResult;
+    this.#logSemanticTokensRegistration(
+      "initialize",
+      this.#initializeResult.capabilities["semanticTokensProvider"]
+    );
     this.notify("initialized", {});
   }
 
   public supports(method: string): boolean {
-    if (this.#dynamicRegistrations.has(method)) {
+    if ((this.#dynamicRegistrations.get(method)?.length ?? 0) > 0) {
       return true;
     }
     const capabilities = this.initializeResult.capabilities;
@@ -202,8 +217,22 @@ export class LspProcessClient {
     return false;
   }
 
-  public semanticTokensRegistration(): unknown {
-    return this.#dynamicRegistrations.get("textDocument/semanticTokens")
+  public semanticTokensRegistration(
+    languageId: string,
+    uri: string
+  ): unknown {
+    const registrations = this.#dynamicRegistrations.get(
+      "textDocument/semanticTokens"
+    );
+    let registration: DynamicRegistration | undefined;
+    for (let index = (registrations?.length ?? 0) - 1; index >= 0; index--) {
+      const candidate = registrations![index]!;
+      if (registrationMatches(candidate.registerOptions, languageId, uri)) {
+        registration = candidate;
+        break;
+      }
+    }
+    return registration?.registerOptions
       ?? this.initializeResult.capabilities["semanticTokensProvider"];
   }
 
@@ -298,6 +327,7 @@ export class LspProcessClient {
       ) {
         return true;
       }
+
       if (Date.now() >= deadline) {
         return false;
       }
@@ -306,6 +336,29 @@ export class LspProcessClient {
         Math.max(1, this.#config.settleMilliseconds - quietFor)
       ));
     }
+  }
+
+  public waitForNotification(
+    method: string,
+    timeoutMilliseconds: number
+  ): Promise<boolean> {
+    if (this.#receivedNotifications.has(method)) {
+      return Promise.resolve(true);
+    }
+    return new Promise((resolveWait) => {
+      const waiters = this.#notificationWaiters.get(method) ?? new Set();
+      const finish = (received: boolean): void => {
+        clearTimeout(timer);
+        waiters.delete(finish);
+        if (waiters.size === 0) {
+          this.#notificationWaiters.delete(method);
+        }
+        resolveWait(received);
+      };
+      const timer = setTimeout(() => finish(false), timeoutMilliseconds);
+      waiters.add(finish);
+      this.#notificationWaiters.set(method, waiters);
+    });
   }
 
   public async stop(): Promise<void> {
@@ -448,17 +501,48 @@ export class LspProcessClient {
           for (const registration of params["registrations"]) {
             if (
               isObject(registration)
+              && typeof registration["id"] === "string"
               && typeof registration["method"] === "string"
             ) {
-              this.#dynamicRegistrations.set(
-                registration["method"],
-                registration["registerOptions"]
-              );
+              const method = registration["method"];
+              const registrations = this.#dynamicRegistrations.get(method) ?? [];
+              registrations.push({
+                id: registration["id"],
+                registerOptions: registration["registerOptions"]
+              });
+              this.#dynamicRegistrations.set(method, registrations);
+              if (method === "textDocument/semanticTokens") {
+                this.#logSemanticTokensRegistration(
+                  registration["id"],
+                  registration["registerOptions"]
+                );
+              }
             }
           }
         }
         return null;
-      case "client/unregisterCapability":
+      case "client/unregisterCapability": {
+        if (isObject(params) && Array.isArray(params["unregisterations"])) {
+          for (const unregistration of params["unregisterations"]) {
+            if (
+              !isObject(unregistration)
+              || typeof unregistration["id"] !== "string"
+              || typeof unregistration["method"] !== "string"
+            ) {
+              continue;
+            }
+            const method = unregistration["method"];
+            const registrations = this.#dynamicRegistrations.get(method)
+              ?.filter((candidate) => candidate.id !== unregistration["id"]);
+            if (registrations === undefined || registrations.length === 0) {
+              this.#dynamicRegistrations.delete(method);
+            } else {
+              this.#dynamicRegistrations.set(method, registrations);
+            }
+          }
+        }
+        return null;
+      }
       case "window/workDoneProgress/create":
       case "window/showMessageRequest":
         return null;
@@ -489,6 +573,13 @@ export class LspProcessClient {
   }
 
   #handleNotification(method: string, params: unknown): void {
+    this.#receivedNotifications.add(method);
+    const waiters = this.#notificationWaiters.get(method);
+    if (waiters !== undefined) {
+      for (const finish of [...waiters]) {
+        finish(true);
+      }
+    }
     if (method === "$/progress" && isObject(params)) {
       const token = String(params["token"]);
       const value = params["value"];
@@ -547,6 +638,24 @@ export class LspProcessClient {
     this.#requestStatistics.set(pending.method, accumulator);
   }
 
+  #logSemanticTokensRegistration(id: string, options: unknown): void {
+    if (!isObject(options)) {
+      return;
+    }
+    const legend = options["legend"];
+    this.#onLog(
+      `[client] Semantic tokens registration ${id}: selector=${
+        JSON.stringify(options["documentSelector"] ?? null)
+      }, tokenTypes=${
+        JSON.stringify(
+          isObject(legend) && Array.isArray(legend["tokenTypes"])
+            ? legend["tokenTypes"]
+            : []
+        )
+      }.`
+    );
+  }
+
   #breakConnection(error: Error): void {
     if (this.#fatalError !== undefined) {
       return;
@@ -563,6 +672,99 @@ export class LspProcessClient {
     return this.#stderrTail.length === 0
       ? ""
       : `\nRecent server stderr:\n${this.#stderrTail.join("\n")}`;
+  }
+}
+
+function registrationMatches(
+  registerOptions: unknown,
+  languageId: string,
+  uri: string
+): boolean {
+  if (!isObject(registerOptions)) {
+    return true;
+  }
+  const selector = registerOptions["documentSelector"];
+  if (selector === null || selector === undefined) {
+    return true;
+  }
+  if (!Array.isArray(selector)) {
+    return false;
+  }
+  const scheme = new URL(uri).protocol.replace(/:$/u, "");
+  return selector.some((filter) => (
+    isObject(filter)
+    && (
+      filter["language"] === undefined
+      || filter["language"] === languageId
+    )
+    && (
+      filter["scheme"] === undefined
+      || filter["scheme"] === scheme
+    )
+    && (
+      filter["pattern"] === undefined
+      || globMatchesUri(filter["pattern"], uri)
+    )
+  ));
+}
+
+function globMatchesUri(pattern: unknown, uri: string): boolean {
+  let glob: string;
+  let path = uriPath(uri);
+  if (path === undefined) {
+    return false;
+  }
+  if (typeof pattern === "string") {
+    glob = pattern;
+  } else if (
+    isObject(pattern)
+    && typeof pattern["pattern"] === "string"
+  ) {
+    glob = pattern["pattern"];
+    const baseUri = typeof pattern["baseUri"] === "string"
+      ? pattern["baseUri"]
+      : isObject(pattern["baseUri"])
+        && typeof pattern["baseUri"]["uri"] === "string"
+        ? pattern["baseUri"]["uri"]
+        : undefined;
+    if (baseUri === undefined) {
+      return false;
+    }
+    const baseUriPath = uriPath(baseUri);
+    if (baseUriPath === undefined) {
+      return false;
+    }
+    const basePath = baseUriPath.replace(/\/+$/u, "");
+    const comparisonPath = process.platform === "win32"
+      ? path.toLowerCase()
+      : path;
+    const comparisonBase = process.platform === "win32"
+      ? basePath.toLowerCase()
+      : basePath;
+    if (
+      comparisonPath !== comparisonBase
+      && !comparisonPath.startsWith(`${comparisonBase}/`)
+    ) {
+      return false;
+    }
+    path = path.slice(basePath.length).replace(/^\/+/u, "");
+  } else {
+    return false;
+  }
+  const options = {
+    dot: true,
+    nocase: process.platform === "win32",
+    windowsPathsNoEscape: true
+  } as const;
+  return minimatch(path, glob, options)
+    || minimatch(path.replace(/^\/+/u, ""), glob, options);
+}
+
+function uriPath(uri: string): string | undefined {
+  try {
+    return decodeURIComponent(new URL(uri).pathname).replace(/\\/gu, "/");
+  } catch {
+    return undefined;
   }
 }
 

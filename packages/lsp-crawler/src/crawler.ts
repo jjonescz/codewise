@@ -6,7 +6,6 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import {
   LspProcessClient,
-  LspRequestTimeoutError,
   LspResponseError,
   type LspRequestStatistics
 } from "./client.js";
@@ -47,7 +46,7 @@ export interface CrawlTimings {
   readonly indexPreparationMilliseconds: number;
   readonly workspaceLoadWaitMilliseconds: number;
   readonly candidateDiscoveryMilliseconds: number;
-  readonly bulkReferenceMilliseconds: number;
+  readonly symbolGraphMilliseconds: number;
   readonly occurrenceProbeMilliseconds: number;
   readonly documentCrawlMilliseconds: number;
   readonly totalMilliseconds: number;
@@ -59,7 +58,7 @@ export interface CrawlSummary {
   readonly requestFailures: number;
   readonly recoveredRequestFailures: number;
   readonly requestStatistics: readonly LspRequestStatistics[];
-  readonly bulkReferences?: BulkReferenceSummary;
+  readonly symbolGraph?: SymbolGraphSummary;
   readonly database: ReturnType<CrawlerDatabase["statistics"]>;
   readonly timings: CrawlTimings;
 }
@@ -80,48 +79,54 @@ export class CrawlError extends AggregateError {
 export interface CrawlOptions {
   readonly onLog?: (message: string) => void;
   readonly onProgress?: (progress: CrawlProgress) => void;
-  readonly bulkReferenceProvider?: BulkReferenceProvider;
+  readonly symbolGraphProvider?: SymbolGraphProvider;
 }
 
-export interface BulkReferenceDocument {
+export interface SymbolGraphDocument {
   readonly uri: string;
   readonly languageId: string;
-  readonly occurrences: readonly BulkReferenceOccurrence[];
+  readonly occurrences: readonly SymbolGraphOccurrence[];
 }
 
-export interface BulkReferenceOccurrence {
+export interface SymbolGraphOccurrence {
   readonly id: number;
-  readonly position: Position;
+  readonly range: Range;
 }
 
-export interface BulkReferenceGroup {
-  readonly occurrenceIds: readonly number[];
-  readonly locations: readonly Location[];
+export interface SymbolGraphEdge {
+  readonly occurrenceId: number;
+  readonly isDefinition: boolean;
 }
 
-export interface BulkReferenceResult {
-  readonly groups: readonly BulkReferenceGroup[];
-  readonly unresolvedOccurrenceCount: number;
-  readonly failedOccurrenceCount: number;
+export interface SymbolGraphSymbol {
+  readonly providerKey: string;
+  readonly displayName?: string;
+  readonly occurrences: readonly SymbolGraphEdge[];
+  readonly definitions: readonly Location[];
+}
+
+export interface SymbolGraphResult {
+  readonly symbols: readonly SymbolGraphSymbol[];
+  readonly unresolvedOccurrenceIds: readonly number[];
   readonly metrics?: Readonly<Record<string, number>>;
 }
 
-export interface BulkReferenceProvider {
+export interface SymbolGraphProvider {
   readonly name: string;
   readonly languageIds: ReadonlySet<string>;
-  populateReferences(
+  populateSymbolGraph(
     client: LspProcessClient,
-    documents: readonly BulkReferenceDocument[]
-  ): Promise<BulkReferenceResult>;
+    documents: readonly SymbolGraphDocument[]
+  ): Promise<SymbolGraphResult>;
 }
 
-export interface BulkReferenceSummary {
+export interface SymbolGraphSummary {
   readonly provider: string;
   readonly status: "used" | "fallback";
   readonly occurrenceCount: number;
   readonly populatedOccurrenceCount: number;
   readonly unresolvedOccurrenceCount: number;
-  readonly failedOccurrenceCount: number;
+  readonly symbolCount: number;
   readonly elapsedMilliseconds: number;
   readonly metrics?: Readonly<Record<string, number>>;
 }
@@ -261,29 +266,23 @@ export async function crawlWorkspace(
     let documentsCompleted = 0;
     let occurrenceProbeMilliseconds = 0;
     const progressStartedAt = performance.now();
-    const provider = options.bulkReferenceProvider;
-    const standardWork = provider === undefined
-      ? prioritizedWork
-      : prioritizedWork.filter((documentWork) => (
-          !provider.languageIds.has(documentWork.document.languageId)
-        ));
+    const provider = options.symbolGraphProvider;
     const providerWork = provider === undefined
       ? []
       : prioritizedWork.filter((documentWork) => (
           provider.languageIds.has(documentWork.document.languageId)
         ));
-    await probeWork(standardWork);
-    const bulkReferenceStartedAt = performance.now();
-    const bulkReferences = await populateBulkReferences(
+    const symbolGraphStartedAt = performance.now();
+    const symbolGraph = await populateSymbolGraph(
       client,
       database,
       providerWork,
       provider,
       onLog
     );
-    const bulkReferenceMilliseconds =
-      performance.now() - bulkReferenceStartedAt;
-    await probeWork(providerWork);
+    const symbolGraphMilliseconds =
+      performance.now() - symbolGraphStartedAt;
+    await probeWork(prioritizedWork);
     const documentCrawlMilliseconds =
       performance.now() - documentCrawlStartedAt;
 
@@ -294,7 +293,7 @@ export async function crawlWorkspace(
       requestFailures: failures.length,
       recoveredRequestFailures: counters.recoveredRequestFailures,
       requestStatistics: client.requestStatistics(),
-      ...(bulkReferences === undefined ? {} : { bulkReferences }),
+      ...(symbolGraph === undefined ? {} : { symbolGraph }),
       database: database.statistics(),
       timings: {
         documentDiscoveryMilliseconds,
@@ -302,7 +301,7 @@ export async function crawlWorkspace(
         indexPreparationMilliseconds,
         workspaceLoadWaitMilliseconds,
         candidateDiscoveryMilliseconds,
-        bulkReferenceMilliseconds,
+        symbolGraphMilliseconds,
         occurrenceProbeMilliseconds,
         documentCrawlMilliseconds,
         totalMilliseconds: performance.now() - startedAt
@@ -381,17 +380,17 @@ export async function crawlWorkspace(
   }
 }
 
-async function populateBulkReferences(
+async function populateSymbolGraph(
   client: LspProcessClient,
   database: CrawlerDatabase,
   work: readonly DocumentWork[],
-  provider: BulkReferenceProvider | undefined,
+  provider: SymbolGraphProvider | undefined,
   onLog: (message: string) => void
-): Promise<BulkReferenceSummary | undefined> {
+): Promise<SymbolGraphSummary | undefined> {
   if (provider === undefined) {
     return undefined;
   }
-  const documents = work.flatMap((documentWork): BulkReferenceDocument[] => {
+  const documents = work.flatMap((documentWork): SymbolGraphDocument[] => {
     const prepared = documentWork.prepared;
     if (
       prepared === undefined
@@ -405,7 +404,7 @@ async function populateBulkReferences(
       occurrences: database.listOccurrences(prepared.recordId).map(
         (occurrence) => ({
           id: occurrence.id,
-          position: occurrence.range.start
+          range: occurrence.range
         })
       )
     }];
@@ -417,69 +416,88 @@ async function populateBulkReferences(
   );
   const startedAt = performance.now();
   try {
-    const result = await provider.populateReferences(client, documents);
+    const result = await provider.populateSymbolGraph(client, documents);
     const savedOccurrenceIds = new Set<number>();
-    const answers: Array<{
-      readonly occurrenceIds: readonly number[];
-      readonly kind: "references";
-      readonly locations: readonly Location[];
-    }> = [];
-    for (const group of result.groups) {
+    const providerKeys = new Set<string>();
+    for (const symbol of result.symbols) {
       if (
-        group.occurrenceIds.length === 0
-        || group.occurrenceIds.some((id) => !occurrenceIds.has(id))
+        symbol.providerKey.length === 0
+        || providerKeys.has(symbol.providerKey)
+        || symbol.occurrences.length === 0
+        || symbol.occurrences.some(
+          (edge) => !occurrenceIds.has(edge.occurrenceId)
+        )
       ) {
         throw new Error(
-          `Bulk reference provider ${provider.name} returned invalid occurrence IDs.`
+          `Symbol graph provider ${provider.name} returned an invalid symbol.`
         );
       }
-      for (const id of group.occurrenceIds) {
-        if (savedOccurrenceIds.has(id)) {
+      providerKeys.add(symbol.providerKey);
+      for (const edge of symbol.occurrences) {
+        if (savedOccurrenceIds.has(edge.occurrenceId)) {
           throw new Error(
-            `Bulk reference provider ${provider.name} returned occurrence ${id} `
-            + "in more than one group."
+            `Symbol graph provider ${provider.name} returned occurrence `
+            + `${edge.occurrenceId} in more than one symbol.`
           );
         }
-        savedOccurrenceIds.add(id);
+        savedOccurrenceIds.add(edge.occurrenceId);
       }
-      answers.push({
-        occurrenceIds: group.occurrenceIds,
-        kind: "references",
-        locations: group.locations
-      });
     }
-    database.saveSharedLocationAnswers(answers);
-    const summary: BulkReferenceSummary = {
+    const unresolvedOccurrenceIds = new Set(result.unresolvedOccurrenceIds);
+    if (
+      unresolvedOccurrenceIds.size !== result.unresolvedOccurrenceIds.length
+      || result.unresolvedOccurrenceIds.some(
+        (id) => !occurrenceIds.has(id) || savedOccurrenceIds.has(id)
+      )
+    ) {
+      throw new Error(
+        `Symbol graph provider ${provider.name} returned invalid unresolved `
+        + "occurrence IDs."
+      );
+    }
+    if (
+      savedOccurrenceIds.size + unresolvedOccurrenceIds.size
+      !== occurrenceIds.size
+    ) {
+      throw new Error(
+        `Symbol graph provider ${provider.name} did not classify every `
+        + "requested occurrence."
+      );
+    }
+    database.saveSymbolGraph(
+      provider.name,
+      [...occurrenceIds],
+      result.symbols
+    );
+    const summary: SymbolGraphSummary = {
       provider: provider.name,
       status: "used",
       occurrenceCount: occurrenceIds.size,
       populatedOccurrenceCount: savedOccurrenceIds.size,
-      unresolvedOccurrenceCount: result.unresolvedOccurrenceCount,
-      failedOccurrenceCount: result.failedOccurrenceCount,
+      unresolvedOccurrenceCount: unresolvedOccurrenceIds.size,
+      symbolCount: result.symbols.length,
       elapsedMilliseconds: performance.now() - startedAt,
       ...(result.metrics === undefined ? {} : { metrics: result.metrics })
     };
     onLog(
-      `[crawler] [info] Bulk reference provider ${provider.name} populated `
+      `[crawler] [info] Symbol graph provider ${provider.name} populated `
       + `${savedOccurrenceIds.size}/${occurrenceIds.size} occurrence(s) in `
       + `${Math.round(summary.elapsedMilliseconds)}ms.`
     );
     return summary;
   } catch (error) {
-    if (error instanceof LspRequestTimeoutError) {
-      throw error;
-    }
-    const summary: BulkReferenceSummary = {
+    database.clearSymbolGraph([...occurrenceIds]);
+    const summary: SymbolGraphSummary = {
       provider: provider.name,
       status: "fallback",
       occurrenceCount: occurrenceIds.size,
       populatedOccurrenceCount: 0,
       unresolvedOccurrenceCount: occurrenceIds.size,
-      failedOccurrenceCount: occurrenceIds.size,
+      symbolCount: 0,
       elapsedMilliseconds: performance.now() - startedAt
     };
     onLog(
-      `[crawler] [warning] Bulk reference provider ${provider.name} failed; `
+      `[crawler] [warning] Symbol graph provider ${provider.name} failed; `
       + `using standard LSP requests: ${
         error instanceof Error ? error.message : String(error)
       }`
@@ -519,6 +537,7 @@ async function discoverDocumentCandidates(
       client,
       config,
       uri,
+      document.languageId,
       content,
       mapper,
       failures
@@ -587,6 +606,7 @@ async function discoverCandidates(
   client: LspProcessClient,
   config: CrawlerConfig,
   uri: string,
+  languageId: string,
   content: string,
   mapper: TextCoordinateMapper,
   failures: Error[]
@@ -607,7 +627,10 @@ async function discoverCandidates(
     }
   };
 
-  const semanticRegistration = client.semanticTokensRegistration();
+  const semanticRegistration = client.semanticTokensRegistration(
+    languageId,
+    uri
+  );
   if (semanticRegistration !== undefined && semanticRegistration !== false) {
     try {
       (await semanticTokenCandidates(
@@ -829,7 +852,7 @@ async function probeOccurrence(
       }
       if (
         kind === "references"
-        && languageId === "razor"
+        && isRazorLanguage(languageId)
         && isRazorNamespaceReferenceFailure(error)
       ) {
         database.saveLocationAnswer(occurrenceId, kind, []);
@@ -897,6 +920,10 @@ function isRazorNamespaceReferenceFailure(error: unknown): boolean {
   return error instanceof LspResponseError
     && error.code === -32000
     && error.message.includes("'symbol' cannot be a namespace");
+}
+
+function isRazorLanguage(languageId: string): boolean {
+  return languageId === "aspnetcorerazor" || languageId === "razor";
 }
 
 function parseLocations(value: unknown): readonly Location[] {

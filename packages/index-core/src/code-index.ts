@@ -14,10 +14,16 @@ import type {
 
 export class CodeIndex {
   readonly #database: SqlDatabase;
+  readonly #hasSymbolGraph: boolean;
 
   public constructor(database: SqlDatabase) {
     this.#database = database;
     validateIndexDatabase(database);
+    this.#hasSymbolGraph = database.all(`
+      SELECT 1
+      FROM sqlite_schema
+      WHERE type = 'table' AND name = 'occurrence_symbols'
+    `).length > 0;
   }
 
   public get statistics(): IndexStatistics {
@@ -40,7 +46,14 @@ export class CodeIndex {
     relativePath: string,
     position: IndexPosition
   ): readonly IndexLocation[] {
-    return this.#locations(relativePath, position, "definition");
+    const occurrenceId = this.#findOccurrenceId(relativePath, position);
+    if (occurrenceId === undefined) {
+      return [];
+    }
+    const graphLocations = this.#symbolDefinitions(occurrenceId);
+    return graphLocations === undefined || graphLocations.length === 0
+      ? this.#answerLocations(occurrenceId, "definition")
+      : graphLocations;
   }
 
   public references(
@@ -51,6 +64,13 @@ export class CodeIndex {
     const occurrenceId = this.#findOccurrenceId(relativePath, position);
     if (occurrenceId === undefined) {
       return [];
+    }
+    const graphLocations = this.#symbolReferences(
+      occurrenceId,
+      includeDeclaration
+    );
+    if (graphLocations !== undefined) {
+      return graphLocations;
     }
     const locations = this.#answerLocations(occurrenceId, "references");
     if (includeDeclaration) {
@@ -126,15 +146,88 @@ export class CodeIndex {
     this.#database.close();
   }
 
-  #locations(
-    relativePath: string,
-    position: IndexPosition,
-    kind: "declaration" | "definition"
-  ): readonly IndexLocation[] {
-    const occurrenceId = this.#findOccurrenceId(relativePath, position);
-    return occurrenceId === undefined
-      ? []
-      : this.#answerLocations(occurrenceId, kind);
+  #symbolDefinitions(
+    occurrenceId: number
+  ): readonly IndexLocation[] | undefined {
+    if (!this.#hasSymbolGraph || !this.#hasSymbol(occurrenceId)) {
+      return undefined;
+    }
+    return this.#database.all(`
+      SELECT
+        target.relative_path,
+        definition.uri,
+        definition.start_line,
+        definition.start_character,
+        definition.end_line,
+        definition.end_character
+      FROM occurrence_symbols AS edge
+      JOIN symbol_definitions AS definition
+        ON definition.symbol_id = edge.symbol_id
+      LEFT JOIN documents AS target ON target.uri = definition.uri
+      WHERE edge.occurrence_id = ?
+      ORDER BY definition.ordinal
+    `, [occurrenceId]).map(locationFromRow);
+  }
+
+  #symbolReferences(
+    occurrenceId: number,
+    includeDeclaration: boolean
+  ): readonly IndexLocation[] | undefined {
+    if (!this.#hasSymbolGraph || !this.#hasSymbol(occurrenceId)) {
+      return undefined;
+    }
+    return this.#database.all(`
+      WITH source_symbol AS (
+        SELECT symbol_id
+        FROM occurrence_symbols
+        WHERE occurrence_id = ?
+      )
+      SELECT * FROM (
+        SELECT
+          document.relative_path,
+          document.uri,
+          occurrence.start_line,
+          occurrence.start_character,
+          occurrence.end_line,
+          occurrence.end_character
+        FROM source_symbol
+        JOIN occurrence_symbols AS edge
+          ON edge.symbol_id = source_symbol.symbol_id
+        JOIN occurrences AS occurrence ON occurrence.id = edge.occurrence_id
+        JOIN documents AS document ON document.id = occurrence.document_id
+        WHERE ? = 1 OR edge.is_definition = 0
+        UNION
+        SELECT
+          document.relative_path,
+          definition.uri,
+          definition.start_line,
+          definition.start_character,
+          definition.end_line,
+          definition.end_character
+        FROM source_symbol
+        JOIN symbol_definitions AS definition
+          ON definition.symbol_id = source_symbol.symbol_id
+        LEFT JOIN documents AS document ON document.uri = definition.uri
+        WHERE ? = 1
+      )
+      ORDER BY
+        relative_path,
+        uri,
+        start_line,
+        start_character,
+        end_line,
+        end_character
+    `, [
+      occurrenceId,
+      includeDeclaration ? 1 : 0,
+      includeDeclaration ? 1 : 0
+    ]).map(locationFromRow);
+  }
+
+  #hasSymbol(occurrenceId: number): boolean {
+    return this.#database.all(`
+      SELECT 1 FROM occurrence_symbols WHERE occurrence_id = ?
+    `, [occurrenceId]).length > 0;
   }
 
   #findOccurrenceId(

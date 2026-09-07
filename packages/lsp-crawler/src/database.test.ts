@@ -84,4 +84,85 @@ describe("CrawlerDatabase", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("propagates materialized definitions across a graph symbol", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-index-symbol-"));
+    try {
+      const database = new CrawlerDatabase(join(directory, "index.db"));
+      const document = database.upsertDocument({
+        uri: "file:///workspace/source.toy",
+        relativePath: "source.toy",
+        languageId: "toy",
+        contentHash: "content",
+        positionEncoding: "utf-16"
+      });
+      const occurrences = [0, 10].map((start) => database.upsertOccurrence({
+        documentId: document.id,
+        range: {
+          start: { line: 0, character: start },
+          end: { line: 0, character: start + 5 }
+        },
+        discoverySource: "semantic-token"
+      }));
+      database.saveSymbolGraph(
+        "test",
+        occurrences.map((occurrence) => occurrence.id),
+        [{
+          providerKey: "external",
+          occurrences: occurrences.map((occurrence) => ({
+            occurrenceId: occurrence.id,
+            isDefinition: false
+          })),
+          definitions: []
+        }]
+      );
+      expect(database.hasCompleteAnswer(
+        occurrences[1]!.id,
+        "definition"
+      )).toBe(false);
+
+      database.saveLocationAnswer(
+        occurrences[0]!.id,
+        "definition",
+        [{
+          uri: "metadata:///External",
+          range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 8 }
+          }
+        }]
+      );
+      expect(database.hasCompleteAnswer(
+        occurrences[1]!.id,
+        "definition"
+      )).toBe(true);
+      database.saveSymbolGraph(
+        "replacement",
+        occurrences.map((occurrence) => occurrence.id),
+        [{
+          providerKey: "partial",
+          occurrences: [{
+            occurrenceId: occurrences[0]!.id,
+            isDefinition: false
+          }],
+          definitions: []
+        }]
+      );
+      expect(database.hasCompleteAnswer(
+        occurrences[0]!.id,
+        "references"
+      )).toBe(true);
+      expect(database.hasCompleteAnswer(
+        occurrences[1]!.id,
+        "references"
+      )).toBe(false);
+      expect(database.hasCompleteAnswer(
+        occurrences[1]!.id,
+        "definition"
+      )).toBe(false);
+      database.close();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
