@@ -1,5 +1,6 @@
 import {
   type Location,
+  type SymbolGraphDocument,
   type SymbolGraphProvider,
   type SymbolGraphResult,
   type SymbolGraphSymbol
@@ -13,23 +14,22 @@ const requestTimeoutMilliseconds = 5 * 60_000;
 const projectInitializationTimeoutMilliseconds = 10_000;
 const projectLoadRetryMilliseconds = 2_000;
 const projectLoadAttempts = 15;
+const maximumOccurrencesPerChunk = 50_000;
 
 export function createRoslynSymbolGraphProvider(
-  assemblyFilePath: string
+  assemblyFilePath: string,
+  maximumOccurrencesPerRequest = maximumOccurrencesPerChunk
 ): SymbolGraphProvider {
   return {
     name: "roslyn-symbol-graph",
     languageIds: new Set(["csharp", "vb"]),
-    async populateSymbolGraph(client, documents): Promise<SymbolGraphResult> {
+    async populateSymbolGraph(client, documents, onChunk): Promise<void> {
       const occurrenceCount = documents.reduce(
         (count, document) => count + document.occurrences.length,
         0
       );
       if (occurrenceCount === 0) {
-        return {
-          symbols: [],
-          unresolvedOccurrenceIds: []
-        };
+        return;
       }
       const projectInitializationCompleted = await client.waitForNotification(
         "workspace/projectInitializationComplete",
@@ -54,25 +54,35 @@ export function createRoslynSymbolGraphProvider(
         );
       }
 
-      const attempts = projectInitializationCompleted ? projectLoadAttempts : 1;
-      for (let attempt = 1; attempt <= attempts; attempt++) {
-        const result = await dispatchSymbolGraphRequest();
-        if (
-          result.symbols.length > 0
-          || result.unresolvedOccurrenceIds.length < occurrenceCount
-        ) {
-          return result;
+      const chunks = chunkSymbolGraphDocuments(
+        documents,
+        maximumOccurrencesPerRequest
+      );
+      for (let index = 0; index < chunks.length; index++) {
+        const chunk = chunks[index]!;
+        const attempts = index === 0 && projectInitializationCompleted
+          ? projectLoadAttempts
+          : 1;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          const result = await dispatchSymbolGraphRequest(chunk);
+          const projectCount =
+            result.metrics?.["solutionProjectCount"] ?? 0;
+          if (projectCount > 0) {
+            onChunk(result);
+            break;
+          }
+          if (attempt === attempts) {
+            throw new Error(
+              "Roslyn did not load any requested documents for symbol binding."
+            );
+          }
+          await delay(projectLoadRetryMilliseconds);
         }
-        if (attempt === attempts) {
-          throw new Error(
-            "Roslyn did not load any requested documents for symbol binding."
-          );
-        }
-        await delay(projectLoadRetryMilliseconds);
       }
-      throw new Error("Roslyn symbol graph retry loop did not return a result.");
 
-      async function dispatchSymbolGraphRequest(): Promise<SymbolGraphResult> {
+      async function dispatchSymbolGraphRequest(
+        chunk: readonly SymbolGraphDocument[]
+      ): Promise<SymbolGraphResult> {
         const response = parseDispatchResponse(
           await client.request<unknown>(
             dispatchMethod,
@@ -80,7 +90,7 @@ export function createRoslynSymbolGraphProvider(
               messageName: handlerName,
               message: JSON.stringify({
                 ProtocolVersion: protocolVersion,
-                Documents: documents.map((document) => ({
+                Documents: chunk.map((document) => ({
                   Uri: document.uri,
                   Occurrences: document.occurrences.map((occurrence) => ({
                     Id: occurrence.id,
@@ -112,6 +122,42 @@ export function createRoslynSymbolGraphProvider(
       }
     }
   };
+}
+
+export function chunkSymbolGraphDocuments(
+  documents: readonly SymbolGraphDocument[],
+  maximumOccurrences: number
+): SymbolGraphDocument[][] {
+  if (!Number.isSafeInteger(maximumOccurrences) || maximumOccurrences <= 0) {
+    throw new Error("Symbol graph chunk size must be a positive integer.");
+  }
+  const chunks: SymbolGraphDocument[][] = [];
+  let current: SymbolGraphDocument[] = [];
+  let currentCount = 0;
+  for (const document of documents) {
+    let offset = 0;
+    while (offset < document.occurrences.length) {
+      if (currentCount === maximumOccurrences) {
+        chunks.push(current);
+        current = [];
+        currentCount = 0;
+      }
+      const count = Math.min(
+        maximumOccurrences - currentCount,
+        document.occurrences.length - offset
+      );
+      current.push({
+        ...document,
+        occurrences: document.occurrences.slice(offset, offset + count)
+      });
+      offset += count;
+      currentCount += count;
+    }
+  }
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+  return chunks;
 }
 
 function parseActivationResponse(value: unknown): {

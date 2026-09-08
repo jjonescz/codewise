@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Extensions;
 using Microsoft.CodeAnalysis.FindSymbols;
@@ -108,10 +110,7 @@ public sealed class SymbolGraphHandler
                 symbol = NormalizeSymbol(symbol);
                 if (!symbolBuilders.TryGetValue(symbol, out var builder))
                 {
-                    builder = new SymbolBuilder(
-                        symbolBuilders.Count.ToString(
-                            System.Globalization.CultureInfo.InvariantCulture),
-                        symbol);
+                    builder = new SymbolBuilder(symbol);
                     symbolBuilders.Add(symbol, builder);
                 }
                 builder.AddOccurrence(occurrence.Id, document.FilePath!, position);
@@ -202,11 +201,50 @@ public sealed class SymbolGraphHandler
         private readonly HashSet<long> _definitionOccurrenceIds = [];
         private readonly BulkLocation[] _definitions;
 
-        public SymbolBuilder(string providerKey, ISymbol symbol)
+        public SymbolBuilder(ISymbol symbol)
         {
-            ProviderKey = providerKey;
             _symbol = symbol;
             _definitions = GetDefinitions(symbol);
+            ProviderKey = CreateProviderKey(symbol, _definitions);
+        }
+
+        private static string CreateProviderKey(
+            ISymbol symbol,
+            BulkLocation[] definitions)
+        {
+            var identity = new StringBuilder()
+                .Append(symbol.ContainingAssembly?.Identity.ToString() ?? "")
+                .Append('\0')
+                .Append(symbol.GetDocumentationCommentId() ?? "")
+                .Append('\0')
+                .Append(symbol.Kind)
+                .Append('\0')
+                .Append(symbol.MetadataName)
+                .Append('\0')
+                .Append(symbol.ContainingSymbol?.GetDocumentationCommentId() ?? "")
+                .Append('\0')
+                .Append(symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
+            foreach (var definition in definitions)
+            {
+                identity
+                    .Append('\0')
+                    .Append(definition.Uri)
+                    .Append(':')
+                    .Append(definition.StartLine)
+                    .Append(':')
+                    .Append(definition.StartCharacter)
+                    .Append(':')
+                    .Append(definition.EndLine)
+                    .Append(':')
+                    .Append(definition.EndCharacter);
+            }
+            using var sha256 = SHA256.Create();
+            var bytes = sha256.ComputeHash(
+                Encoding.UTF8.GetBytes(identity.ToString()));
+            var result = new StringBuilder(bytes.Length * 2);
+            foreach (var value in bytes)
+                result.Append(value.ToString("x2"));
+            return result.ToString();
         }
 
         public string ProviderKey { get; }

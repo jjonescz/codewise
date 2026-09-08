@@ -160,6 +160,33 @@ describe("CrawlerDatabase", () => {
         occurrences[1]!.id,
         "definition"
       )).toBe(false);
+      database.saveSymbolGraph(
+        "replacement",
+        [occurrences[1]!.id],
+        [{
+          providerKey: "partial",
+          occurrences: [{
+            occurrenceId: occurrences[1]!.id,
+            isDefinition: false
+          }],
+          definitions: []
+        }]
+      );
+      database.saveLocationAnswer(
+        occurrences[0]!.id,
+        "definition",
+        [{
+          uri: "metadata:///Replacement",
+          range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 11 }
+          }
+        }]
+      );
+      expect(database.hasCompleteAnswer(
+        occurrences[1]!.id,
+        "definition"
+      )).toBe(true);
       database.close();
     } finally {
       await rm(directory, { recursive: true, force: true });

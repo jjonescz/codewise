@@ -193,11 +193,11 @@ describe("crawlWorkspace", () => {
         symbolGraphProvider: {
           name: "test-provider",
           languageIds: new Set(["toy"]),
-          async populateSymbolGraph(_client, documents) {
+          async populateSymbolGraph(_client, documents, onChunk) {
             const occurrences = documents.flatMap(
               (document) => document.occurrences
             );
-            return {
+            onChunk({
               symbols: [{
                 providerKey: "value",
                 displayName: "value",
@@ -211,7 +211,7 @@ describe("crawlWorkspace", () => {
                 }]
               }],
               unresolvedOccurrenceIds: []
-            };
+            });
           }
         }
       });

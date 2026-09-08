@@ -116,8 +116,9 @@ export interface SymbolGraphProvider {
   readonly languageIds: ReadonlySet<string>;
   populateSymbolGraph(
     client: LspProcessClient,
-    documents: readonly SymbolGraphDocument[]
-  ): Promise<SymbolGraphResult>;
+    documents: readonly SymbolGraphDocument[],
+    onChunk: (result: SymbolGraphResult) => void
+  ): Promise<void>;
 }
 
 export interface SymbolGraphSummary {
@@ -416,72 +417,77 @@ async function populateSymbolGraph(
   );
   const startedAt = performance.now();
   try {
-    const result = await provider.populateSymbolGraph(client, documents);
-    const savedOccurrenceIds = new Set<number>();
+    const remainingOccurrenceIds = new Set(occurrenceIds);
     const providerKeys = new Set<string>();
-    for (const symbol of result.symbols) {
-      if (
-        symbol.providerKey.length === 0
-        || providerKeys.has(symbol.providerKey)
-        || symbol.occurrences.length === 0
-        || symbol.occurrences.some(
-          (edge) => !occurrenceIds.has(edge.occurrenceId)
-        )
-      ) {
-        throw new Error(
-          `Symbol graph provider ${provider.name} returned an invalid symbol.`
-        );
-      }
-      providerKeys.add(symbol.providerKey);
-      for (const edge of symbol.occurrences) {
-        if (savedOccurrenceIds.has(edge.occurrenceId)) {
+    let populatedOccurrenceCount = 0;
+    let unresolvedOccurrenceCount = 0;
+    const metrics: Record<string, number> = {};
+    await provider.populateSymbolGraph(client, documents, (result) => {
+      const chunkKeys = new Set<string>();
+      const chunkOccurrenceIds: number[] = [];
+      for (const symbol of result.symbols) {
+        if (
+          symbol.providerKey.length === 0
+          || chunkKeys.has(symbol.providerKey)
+          || symbol.occurrences.length === 0
+        ) {
           throw new Error(
-            `Symbol graph provider ${provider.name} returned occurrence `
-            + `${edge.occurrenceId} in more than one symbol.`
+            `Symbol graph provider ${provider.name} returned an invalid symbol.`
           );
         }
-        savedOccurrenceIds.add(edge.occurrenceId);
+        chunkKeys.add(symbol.providerKey);
+        providerKeys.add(symbol.providerKey);
+        for (const edge of symbol.occurrences) {
+          if (!remainingOccurrenceIds.delete(edge.occurrenceId)) {
+            throw new Error(
+              `Symbol graph provider ${provider.name} returned invalid or `
+              + `duplicate occurrence ${edge.occurrenceId}.`
+            );
+          }
+          chunkOccurrenceIds.push(edge.occurrenceId);
+          populatedOccurrenceCount++;
+        }
       }
-    }
-    const unresolvedOccurrenceIds = new Set(result.unresolvedOccurrenceIds);
-    if (
-      unresolvedOccurrenceIds.size !== result.unresolvedOccurrenceIds.length
-      || result.unresolvedOccurrenceIds.some(
-        (id) => !occurrenceIds.has(id) || savedOccurrenceIds.has(id)
-      )
-    ) {
-      throw new Error(
-        `Symbol graph provider ${provider.name} returned invalid unresolved `
-        + "occurrence IDs."
+      for (const id of result.unresolvedOccurrenceIds) {
+        if (!remainingOccurrenceIds.delete(id)) {
+          throw new Error(
+            `Symbol graph provider ${provider.name} returned invalid or `
+            + `duplicate unresolved occurrence ${id}.`
+          );
+        }
+        chunkOccurrenceIds.push(id);
+        unresolvedOccurrenceCount++;
+      }
+      database.saveSymbolGraph(
+        provider.name,
+        chunkOccurrenceIds,
+        result.symbols
       );
-    }
-    if (
-      savedOccurrenceIds.size + unresolvedOccurrenceIds.size
-      !== occurrenceIds.size
-    ) {
+      for (const [name, value] of Object.entries(result.metrics ?? {})) {
+        metrics[name] = name.endsWith("Count")
+          ? Math.max(metrics[name] ?? 0, value)
+          : (metrics[name] ?? 0) + value;
+      }
+    });
+    if (remainingOccurrenceIds.size !== 0) {
       throw new Error(
         `Symbol graph provider ${provider.name} did not classify every `
         + "requested occurrence."
       );
     }
-    database.saveSymbolGraph(
-      provider.name,
-      [...occurrenceIds],
-      result.symbols
-    );
     const summary: SymbolGraphSummary = {
       provider: provider.name,
       status: "used",
       occurrenceCount: occurrenceIds.size,
-      populatedOccurrenceCount: savedOccurrenceIds.size,
-      unresolvedOccurrenceCount: unresolvedOccurrenceIds.size,
-      symbolCount: result.symbols.length,
+      populatedOccurrenceCount,
+      unresolvedOccurrenceCount,
+      symbolCount: providerKeys.size,
       elapsedMilliseconds: performance.now() - startedAt,
-      ...(result.metrics === undefined ? {} : { metrics: result.metrics })
+      ...(Object.keys(metrics).length === 0 ? {} : { metrics })
     };
     onLog(
       `[crawler] [info] Symbol graph provider ${provider.name} populated `
-      + `${savedOccurrenceIds.size}/${occurrenceIds.size} occurrence(s) in `
+      + `${populatedOccurrenceCount}/${occurrenceIds.size} occurrence(s) in `
       + `${Math.round(summary.elapsedMilliseconds)}ms.`
     );
     return summary;
