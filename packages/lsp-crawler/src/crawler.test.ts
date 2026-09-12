@@ -193,6 +193,7 @@ describe("crawlWorkspace", () => {
         symbolGraphProvider: {
           name: "test-provider",
           languageIds: new Set(["toy"]),
+          fallbackToLsp: false,
           async populateSymbolGraph(_client, documents, onChunk) {
             const occurrences = documents.flatMap(
               (document) => document.occurrences
@@ -225,6 +226,8 @@ describe("crawlWorkspace", () => {
         .get("textDocument/references") ?? 0).toBe(0);
       expect((await methodCounts(join(directory, "server.log")))
         .get("textDocument/definition") ?? 0).toBe(0);
+      expect((await methodCounts(join(directory, "server.log")))
+        .get("textDocument/hover") ?? 0).toBe(0);
       const index = openIndex(graphDatabasePath);
       expect(index.references(
         "sample.toy",
@@ -247,6 +250,7 @@ describe("crawlWorkspace", () => {
           symbolGraphProvider: {
             name: "failing-provider",
             languageIds: new Set(["toy"]),
+            fallbackToLsp: true,
             populateSymbolGraph() {
               throw new LspRequestTimeoutError("test/symbolGraph", 10);
             }
@@ -267,6 +271,30 @@ describe("crawlWorkspace", () => {
         "SELECT COUNT(*) AS count FROM occurrence_symbols"
       ).get()).toMatchObject({ count: 0 });
       fallbackDatabase.close();
+
+      const requiredLogPath = join(directory, "required.log");
+      await expect(crawlWorkspace(
+        {
+          ...config,
+          server: {
+            ...config.server,
+            args: [serverPath, requiredLogPath]
+          }
+        },
+        join(directory, "required.db"),
+        {
+          symbolGraphProvider: {
+            name: "required-provider",
+            languageIds: new Set(["toy"]),
+            fallbackToLsp: false,
+            populateSymbolGraph() {
+              throw new Error("Expected required provider failure.");
+            }
+          }
+        }
+      )).rejects.toThrow("Required symbol graph provider");
+      expect((await methodCounts(requiredLogPath))
+        .get("textDocument/references") ?? 0).toBe(0);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

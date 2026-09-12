@@ -22,7 +22,8 @@ export function createRoslynSymbolGraphProvider(
 ): SymbolGraphProvider {
   return {
     name: "roslyn-symbol-graph",
-    languageIds: new Set(["csharp", "vb"]),
+    languageIds: new Set(["csharp"]),
+    fallbackToLsp: false,
     async populateSymbolGraph(client, documents, onChunk): Promise<void> {
       const occurrenceCount = documents.reduce(
         (count, document) => count + document.occurrences.length,

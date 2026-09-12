@@ -187,6 +187,15 @@ describe("CrawlerDatabase", () => {
         occurrences[1]!.id,
         "definition"
       )).toBe(true);
+      database.clearSymbolGraphForDocuments([document.id]);
+      expect(database.hasCompleteAnswer(
+        occurrences[0]!.id,
+        "references"
+      )).toBe(false);
+      expect(database.hasCompleteAnswer(
+        occurrences[1]!.id,
+        "references"
+      )).toBe(false);
       database.close();
     } finally {
       await rm(directory, { recursive: true, force: true });

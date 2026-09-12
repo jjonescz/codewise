@@ -35,10 +35,7 @@ export class CodeIndex {
         "status = 'complete'"
       ),
       answerLocationCount: this.#count("answer_locations"),
-      completedHoverCount: this.#count(
-        "hover_results",
-        "status = 'complete'"
-      )
+      completedHoverCount: this.#completedHoverCount()
     };
   }
 
@@ -108,8 +105,11 @@ export class CodeIndex {
       ORDER BY occurrence.end_key - occurrence.start_key, occurrence.id
       LIMIT 1
     `, [normalizeRelativePath(relativePath), key, key])[0];
-    if (row === undefined || row["contents_json"] === null) {
-      return undefined;
+    if (row === undefined) {
+      return this.#symbolHover(relativePath, position);
+    }
+    if (row["contents_json"] === null) {
+      return this.#symbolHover(relativePath, position);
     }
 
     const contentsJson = requiredString(row, "contents_json");
@@ -228,6 +228,84 @@ export class CodeIndex {
     return this.#database.all(`
       SELECT 1 FROM occurrence_symbols WHERE occurrence_id = ?
     `, [occurrenceId]).length > 0;
+  }
+
+  #symbolHover(
+    relativePath: string,
+    position: IndexPosition
+  ): IndexHover | undefined {
+    if (!this.#hasSymbolGraph) {
+      return undefined;
+    }
+    const key = positionKey(position);
+    const row = this.#database.all(`
+      SELECT
+        symbol.display_name,
+        occurrence.start_line,
+        occurrence.start_character,
+        occurrence.end_line,
+        occurrence.end_character
+      FROM occurrence_symbols AS edge
+      JOIN symbols AS symbol ON symbol.id = edge.symbol_id
+      JOIN occurrences AS occurrence ON occurrence.id = edge.occurrence_id
+      JOIN documents AS document ON document.id = occurrence.document_id
+      WHERE document.relative_path = ?
+        AND occurrence.start_key <= ?
+        AND occurrence.end_key > ?
+        AND symbol.display_name IS NOT NULL
+        AND symbol.display_name <> ''
+      ORDER BY occurrence.end_key - occurrence.start_key, occurrence.id
+      LIMIT 1
+    `, [normalizeRelativePath(relativePath), key, key])[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    return {
+      contents: {
+        kind: "plaintext",
+        value: requiredString(row, "display_name")
+      },
+      range: {
+        start: {
+          line: requiredNumber(row, "start_line"),
+          character: requiredNumber(row, "start_character")
+        },
+        end: {
+          line: requiredNumber(row, "end_line"),
+          character: requiredNumber(row, "end_character")
+        }
+      }
+    };
+  }
+
+  #completedHoverCount(): number {
+    if (!this.#hasSymbolGraph) {
+      return this.#count("hover_results", "status = 'complete'");
+    }
+    const value = this.#database.all(`
+      SELECT COUNT(*) AS count
+      FROM occurrences AS occurrence
+      WHERE EXISTS (
+        SELECT 1
+        FROM hover_results AS hover
+        WHERE hover.occurrence_id = occurrence.id
+          AND hover.status = 'complete'
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM occurrence_symbols AS edge
+        JOIN symbols AS symbol ON symbol.id = edge.symbol_id
+        WHERE edge.occurrence_id = occurrence.id
+          AND symbol.display_name IS NOT NULL
+          AND symbol.display_name <> ''
+      )
+    `)[0]?.["count"];
+    if (typeof value !== "number") {
+      throw new CodeIndexValidationError(
+        "The index returned an invalid completed hover count."
+      );
+    }
+    return value;
   }
 
   #findOccurrenceId(

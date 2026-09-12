@@ -120,10 +120,35 @@ public sealed class SymbolGraphHandler
         return new SymbolResolution(
             symbolBuilders.Values
                 .Select(builder => builder.ToSymbol())
+                .GroupBy(symbol => symbol.ProviderKey, StringComparer.Ordinal)
+                .Select(MergeSymbols)
                 .OrderBy(symbol => symbol.ProviderKey, StringComparer.Ordinal)
                 .ToArray(),
             unresolvedOccurrenceIds.ToArray());
     }
+
+    private static SymbolGraphSymbol MergeSymbols(
+        IGrouping<string, SymbolGraphSymbol> symbols)
+        => new()
+        {
+            ProviderKey = symbols.Key,
+            DisplayName = symbols
+                .Select(symbol => symbol.DisplayName)
+                .FirstOrDefault(name => name.Length > 0) ?? "",
+            Occurrences = symbols
+                .SelectMany(symbol => symbol.Occurrences)
+                .GroupBy(edge => edge.OccurrenceId)
+                .Select(group => new SymbolGraphEdge
+                {
+                    OccurrenceId = group.Key,
+                    IsDefinition = group.Any(edge => edge.IsDefinition)
+                })
+                .ToArray(),
+            Definitions = symbols
+                .SelectMany(symbol => symbol.Definitions)
+                .Distinct(BulkLocationComparer.Instance)
+                .ToArray()
+        };
 
     private static ISymbol NormalizeSymbol(ISymbol symbol)
     {

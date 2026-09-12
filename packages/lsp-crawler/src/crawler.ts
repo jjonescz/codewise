@@ -114,6 +114,7 @@ export interface SymbolGraphResult {
 export interface SymbolGraphProvider {
   readonly name: string;
   readonly languageIds: ReadonlySet<string>;
+  readonly fallbackToLsp: boolean;
   populateSymbolGraph(
     client: LspProcessClient,
     documents: readonly SymbolGraphDocument[],
@@ -273,6 +274,18 @@ export async function crawlWorkspace(
       : prioritizedWork.filter((documentWork) => (
           provider.languageIds.has(documentWork.document.languageId)
         ));
+    const standardWork = provider === undefined
+      ? prioritizedWork
+      : prioritizedWork.filter((documentWork) => (
+          !provider.languageIds.has(documentWork.document.languageId)
+        ));
+    database.clearSymbolGraphForDocuments(standardWork.flatMap(
+      (documentWork) => (
+        documentWork.prepared === undefined
+          ? []
+          : [documentWork.prepared.recordId]
+      )
+    ));
     const symbolGraphStartedAt = performance.now();
     const symbolGraph = await populateSymbolGraph(
       client,
@@ -283,7 +296,16 @@ export async function crawlWorkspace(
     );
     const symbolGraphMilliseconds =
       performance.now() - symbolGraphStartedAt;
-    await probeWork(prioritizedWork);
+    if (
+      provider !== undefined
+      && !provider.fallbackToLsp
+      && symbolGraph?.status === "used"
+    ) {
+      await processWork(providerWork, false);
+      await processWork(standardWork, true);
+    } else {
+      await processWork(prioritizedWork, true);
+    }
     const documentCrawlMilliseconds =
       performance.now() - documentCrawlStartedAt;
 
@@ -314,14 +336,17 @@ export async function crawlWorkspace(
     completedSuccessfully = true;
     return summary;
 
-    async function probeWork(documentWorkItems: readonly DocumentWork[]): Promise<void> {
+    async function processWork(
+      documentWorkItems: readonly DocumentWork[],
+      probeOccurrences: boolean
+    ): Promise<void> {
       const startedAt = performance.now();
       await mapConcurrent(
         documentWorkItems,
         config.concurrency,
         async (documentWork) => {
           try {
-            if (documentWork.prepared !== undefined) {
+            if (probeOccurrences && documentWork.prepared !== undefined) {
               await probeDocument(
                 client,
                 database,
@@ -493,6 +518,14 @@ async function populateSymbolGraph(
     return summary;
   } catch (error) {
     database.clearSymbolGraph([...occurrenceIds]);
+    if (!provider.fallbackToLsp) {
+      throw new Error(
+        `Required symbol graph provider ${provider.name} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { cause: error }
+      );
+    }
     const summary: SymbolGraphSummary = {
       provider: provider.name,
       status: "fallback",

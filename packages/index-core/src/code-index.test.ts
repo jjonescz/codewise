@@ -69,6 +69,7 @@ describe("CodeIndex", () => {
       DELETE FROM occurrence_answers;
       DELETE FROM answer_locations;
       DELETE FROM answer_sets;
+      DELETE FROM hover_results;
     `);
     const index = new CodeIndex(new TestSqlDatabase(database));
 
@@ -96,6 +97,23 @@ describe("CodeIndex", () => {
       { line: 3, character: 13 },
       true
     )).toHaveLength(2);
+    expect(index.hover("src/Widget.cs", { line: 3, character: 13 }))
+      .toEqual({
+        contents: { kind: "plaintext", value: "Widget" },
+        range: {
+          start: { line: 3, character: 8 },
+          end: { line: 3, character: 14 }
+        }
+      });
+    expect(index.hover("src/Widget.cs", { line: 3, character: 9 })?.contents)
+      .toEqual({ kind: "plaintext", value: "Widget" });
+    database.prepare(`
+      INSERT INTO hover_results (
+        occurrence_id, status, contents_json, attempt_count
+      ) VALUES (2, 'complete', NULL, 1)
+    `).run();
+    expect(index.hover("src/Widget.cs", { line: 3, character: 13 })?.contents)
+      .toEqual({ kind: "plaintext", value: "Widget" });
     index.close();
   });
 

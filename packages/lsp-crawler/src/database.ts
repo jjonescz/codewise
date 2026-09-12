@@ -434,6 +434,40 @@ export class CrawlerDatabase {
     }
   }
 
+  public clearSymbolGraphForDocuments(
+    documentIds: readonly number[]
+  ): void {
+    if (!this.#hasSymbolGraphSchema() || documentIds.length === 0) {
+      return;
+    }
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const deleteEdges = this.#database.prepare(`
+        DELETE FROM occurrence_symbols
+        WHERE occurrence_id IN (
+          SELECT id FROM occurrences WHERE document_id = ?
+        )
+      `);
+      const deleteAnswers = this.#database.prepare(`
+        DELETE FROM occurrence_answers
+        WHERE kind IN ('definition', 'declaration')
+          AND occurrence_id IN (
+            SELECT id FROM occurrences WHERE document_id = ?
+          )
+      `);
+      for (const documentId of documentIds) {
+        deleteEdges.run(documentId);
+        deleteAnswers.run(documentId);
+      }
+      this.#deleteOrphanedSymbols();
+      this.#deleteOrphanedAnswerSets();
+      this.#database.exec("COMMIT");
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   public saveLocationAnswer(
     occurrenceId: number,
     kind: LocationAnswerKind,
@@ -697,10 +731,7 @@ export class CrawlerDatabase {
         "status = 'complete'"
       ),
       answerLocationCount: this.#count("answer_locations"),
-      completedHoverCount: this.#count(
-        "hover_results",
-        "status = 'complete'"
-      )
+      completedHoverCount: this.#completedHoverCount()
     };
   }
 
@@ -798,6 +829,10 @@ export class CrawlerDatabase {
     for (const occurrenceId of occurrenceIds) {
       deleteAnswer.run(occurrenceId);
     }
+    this.#deleteOrphanedAnswerSets();
+  }
+
+  #deleteOrphanedAnswerSets(): void {
     this.#database.exec(`
       DELETE FROM answer_sets
       WHERE NOT EXISTS (
@@ -843,6 +878,31 @@ export class CrawlerDatabase {
         condition === undefined ? "" : ` WHERE ${condition}`
       }`
     ).get() as unknown as { readonly count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  #completedHoverCount(): number {
+    if (!this.#hasSymbolGraphSchema()) {
+      return this.#count("hover_results", "status = 'complete'");
+    }
+    const row = this.#database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM occurrences AS occurrence
+      WHERE EXISTS (
+        SELECT 1
+        FROM hover_results AS hover
+        WHERE hover.occurrence_id = occurrence.id
+          AND hover.status = 'complete'
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM occurrence_symbols AS edge
+        JOIN symbols AS symbol ON symbol.id = edge.symbol_id
+        WHERE edge.occurrence_id = occurrence.id
+          AND symbol.display_name IS NOT NULL
+          AND symbol.display_name <> ''
+      )
+    `).get() as unknown as { readonly count: number } | undefined;
     return row?.count ?? 0;
   }
 }
