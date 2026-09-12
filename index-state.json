@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-09-12T17:22:33.970Z",
+  "updatedAt": "2026-09-12T18:11:20.614Z",
   "entries": {
     "55d133108e69e1ae01d9a6a66669306c43acaee7": {
       "candidate": {
@@ -35,10 +35,10 @@
         "sourceLabel": "PR #85268",
         "pullRequestNumber": 85268
       },
-      "status": "queued",
       "attempts": 1,
-      "lastAttemptAt": "2026-09-12T17:22:33.970Z",
-      "lastConclusion": "queued"
+      "lastAttemptAt": "2026-09-12T18:11:20.614Z",
+      "lastConclusion": "failure",
+      "status": "failed"
     },
     "206d3563ca7df13ede0d9df485e7a64d29bd3cd4": {
       "candidate": {
