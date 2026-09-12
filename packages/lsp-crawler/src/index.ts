@@ -19,7 +19,7 @@ export {
   type CrawlSummary,
   type CrawlTimings,
   type SymbolGraphDocument,
-  type SymbolGraphEdge,
+  type SymbolGraphDocumentFailure,
   type SymbolGraphOccurrence,
   type SymbolGraphProvider,
   type SymbolGraphResult,

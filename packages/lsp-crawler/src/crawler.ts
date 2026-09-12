@@ -85,36 +85,38 @@ export interface CrawlOptions {
 export interface SymbolGraphDocument {
   readonly uri: string;
   readonly languageId: string;
-  readonly occurrences: readonly SymbolGraphOccurrence[];
+  readonly contentLength: number;
 }
 
 export interface SymbolGraphOccurrence {
-  readonly id: number;
+  readonly uri: string;
   readonly range: Range;
-}
-
-export interface SymbolGraphEdge {
-  readonly occurrenceId: number;
   readonly isDefinition: boolean;
 }
 
 export interface SymbolGraphSymbol {
   readonly providerKey: string;
   readonly displayName?: string;
-  readonly occurrences: readonly SymbolGraphEdge[];
+  readonly occurrences: readonly SymbolGraphOccurrence[];
   readonly definitions: readonly Location[];
+}
+
+export interface SymbolGraphDocumentFailure {
+  readonly uri: string;
+  readonly message: string;
 }
 
 export interface SymbolGraphResult {
   readonly symbols: readonly SymbolGraphSymbol[];
-  readonly unresolvedOccurrenceIds: readonly number[];
+  readonly processedDocumentUris: readonly string[];
+  readonly missingDocumentUris: readonly string[];
+  readonly failures: readonly SymbolGraphDocumentFailure[];
   readonly metrics?: Readonly<Record<string, number>>;
 }
 
 export interface SymbolGraphProvider {
   readonly name: string;
   readonly languageIds: ReadonlySet<string>;
-  readonly fallbackToLsp: boolean;
   populateSymbolGraph(
     client: LspProcessClient,
     documents: readonly SymbolGraphDocument[],
@@ -151,6 +153,7 @@ interface PreparedDocument {
   readonly uri: string;
   readonly recordId: number;
   readonly occurrenceCount: number;
+  readonly contentLength: number;
 }
 
 interface DocumentWork {
@@ -230,6 +233,7 @@ export async function crawlWorkspace(
 
     const documentCrawlStartedAt = performance.now();
     const candidateDiscoveryStartedAt = performance.now();
+    const provider = options.symbolGraphProvider;
     const work = await mapConcurrentValues(
       documents,
       config.concurrency,
@@ -237,13 +241,17 @@ export async function crawlWorkspace(
         try {
           return {
             document,
-            prepared: await discoverDocumentCandidates(
-              client,
-              database,
-              config,
-              document,
-              failures
-            )
+            prepared: provider !== undefined
+              && provider.languageIds.has(document.languageId)
+              ? await prepareProviderDocument(client, database, document)
+              : await discoverDocumentCandidates(
+                  client,
+                  database,
+                  config,
+                  document,
+                  failures,
+                  counters
+                )
           };
         } catch (error) {
           const failure = requestFailure(
@@ -268,7 +276,6 @@ export async function crawlWorkspace(
     let documentsCompleted = 0;
     let occurrenceProbeMilliseconds = 0;
     const progressStartedAt = performance.now();
-    const provider = options.symbolGraphProvider;
     const providerWork = provider === undefined
       ? []
       : prioritizedWork.filter((documentWork) => (
@@ -279,6 +286,13 @@ export async function crawlWorkspace(
       : prioritizedWork.filter((documentWork) => (
           !provider.languageIds.has(documentWork.document.languageId)
         ));
+    database.resetDocumentOccurrences(providerWork.flatMap(
+      (documentWork) => (
+        documentWork.prepared === undefined
+          ? []
+          : [documentWork.prepared.recordId]
+      )
+    ));
     database.clearSymbolGraphForDocuments(standardWork.flatMap(
       (documentWork) => (
         documentWork.prepared === undefined
@@ -296,11 +310,7 @@ export async function crawlWorkspace(
     );
     const symbolGraphMilliseconds =
       performance.now() - symbolGraphStartedAt;
-    if (
-      provider !== undefined
-      && !provider.fallbackToLsp
-      && symbolGraph?.status === "used"
-    ) {
+    if (provider !== undefined && symbolGraph?.status === "used") {
       await processWork(providerWork, false);
       await processWork(standardWork, true);
     } else {
@@ -406,6 +416,29 @@ export async function crawlWorkspace(
   }
 }
 
+async function prepareProviderDocument(
+  client: LspProcessClient,
+  database: CrawlerDatabase,
+  document: WorkspaceDocument
+): Promise<PreparedDocument> {
+  const content = await readFile(document.absolutePath, "utf8");
+  const uri = pathToFileURL(document.absolutePath).href;
+  const record = database.upsertDocument({
+    uri,
+    relativePath: document.relativePath,
+    languageId: document.languageId,
+    contentHash: createHash("sha256").update(content).digest("hex"),
+    positionEncoding: client.positionEncoding
+  });
+  return {
+    document,
+    uri,
+    recordId: record.id,
+    occurrenceCount: 0,
+    contentLength: Buffer.byteLength(content)
+  };
+}
+
 async function populateSymbolGraph(
   client: LspProcessClient,
   database: CrawlerDatabase,
@@ -427,29 +460,37 @@ async function populateSymbolGraph(
     return [{
       uri: prepared.uri,
       languageId: prepared.document.languageId,
-      occurrences: database.listOccurrences(prepared.recordId).map(
-        (occurrence) => ({
-          id: occurrence.id,
-          range: occurrence.range
-        })
-      )
+      contentLength: prepared.contentLength
     }];
   });
-  const occurrenceIds = new Set(
-    documents.flatMap((document) => (
-      document.occurrences.map((occurrence) => occurrence.id)
+  const documentByUri = new Map(
+    work.flatMap((documentWork) => (
+      documentWork.prepared === undefined
+        ? []
+        : [[documentWork.prepared.uri, documentWork.prepared] as const]
     ))
   );
   const startedAt = performance.now();
   try {
-    const remainingOccurrenceIds = new Set(occurrenceIds);
     const providerKeys = new Set<string>();
+    const savedOccurrenceIds = new Set<number>();
     let populatedOccurrenceCount = 0;
-    let unresolvedOccurrenceCount = 0;
+    let processedDocumentCount = 0;
+    let missingDocumentCount = 0;
+    let failedDocumentCount = 0;
     const metrics: Record<string, number> = {};
     await provider.populateSymbolGraph(client, documents, (result) => {
       const chunkKeys = new Set<string>();
       const chunkOccurrenceIds: number[] = [];
+      const persistedSymbols: Array<{
+        readonly providerKey: string;
+        readonly displayName?: string;
+        readonly occurrences: Array<{
+          readonly occurrenceId: number;
+          readonly isDefinition: boolean;
+        }>;
+        readonly definitions: readonly Location[];
+      }> = [];
       for (const symbol of result.symbols) {
         if (
           symbol.providerKey.length === 0
@@ -462,86 +503,104 @@ async function populateSymbolGraph(
         }
         chunkKeys.add(symbol.providerKey);
         providerKeys.add(symbol.providerKey);
+        const persistedOccurrences: Array<{
+          readonly occurrenceId: number;
+          readonly isDefinition: boolean;
+        }> = [];
         for (const edge of symbol.occurrences) {
-          if (!remainingOccurrenceIds.delete(edge.occurrenceId)) {
+          const prepared = documentByUri.get(edge.uri);
+          if (prepared === undefined) {
             throw new Error(
-              `Symbol graph provider ${provider.name} returned invalid or `
-              + `duplicate occurrence ${edge.occurrenceId}.`
+              `Symbol graph provider ${provider.name} returned an occurrence `
+              + `for unknown document ${edge.uri}.`
             );
           }
-          chunkOccurrenceIds.push(edge.occurrenceId);
+          const occurrence = database.upsertOccurrence({
+            documentId: prepared.recordId,
+            range: edge.range,
+            discoverySource: "semantic-token"
+          });
+          if (savedOccurrenceIds.has(occurrence.id)) {
+            throw new Error(
+              `Symbol graph provider ${provider.name} returned occurrence `
+              + `${occurrence.id} in more than one symbol.`
+            );
+          }
+          savedOccurrenceIds.add(occurrence.id);
+          chunkOccurrenceIds.push(occurrence.id);
+          persistedOccurrences.push({
+            occurrenceId: occurrence.id,
+            isDefinition: edge.isDefinition
+          });
           populatedOccurrenceCount++;
         }
-      }
-      for (const id of result.unresolvedOccurrenceIds) {
-        if (!remainingOccurrenceIds.delete(id)) {
-          throw new Error(
-            `Symbol graph provider ${provider.name} returned invalid or `
-            + `duplicate unresolved occurrence ${id}.`
-          );
-        }
-        chunkOccurrenceIds.push(id);
-        unresolvedOccurrenceCount++;
+        persistedSymbols.push({
+          providerKey: symbol.providerKey,
+          ...(symbol.displayName === undefined
+            ? {}
+            : { displayName: symbol.displayName }),
+          occurrences: persistedOccurrences,
+          definitions: symbol.definitions
+        });
       }
       database.saveSymbolGraph(
         provider.name,
         chunkOccurrenceIds,
-        result.symbols
+        persistedSymbols
       );
+      processedDocumentCount += result.processedDocumentUris.length;
+      missingDocumentCount += result.missingDocumentUris.length;
+      failedDocumentCount += result.failures.length;
+      for (const failure of result.failures) {
+        onLog(
+          `[crawler] [warning] Symbol graph document failed for `
+          + `${failure.uri}: ${failure.message}`
+        );
+      }
       for (const [name, value] of Object.entries(result.metrics ?? {})) {
-        metrics[name] = name.endsWith("Count")
+        metrics[name] = name === "solutionProjectCount"
+          || name === "solutionDocumentCount"
           ? Math.max(metrics[name] ?? 0, value)
           : (metrics[name] ?? 0) + value;
       }
     });
-    if (remainingOccurrenceIds.size !== 0) {
+    if (failedDocumentCount > 0) {
       throw new Error(
-        `Symbol graph provider ${provider.name} did not classify every `
-        + "requested occurrence."
+        `Symbol graph provider ${provider.name} failed to process `
+        + `${failedDocumentCount} document(s).`
       );
     }
+    metrics["processedDocumentCount"] = processedDocumentCount;
+    metrics["missingDocumentCount"] = missingDocumentCount;
+    metrics["failedDocumentCount"] = failedDocumentCount;
     const summary: SymbolGraphSummary = {
       provider: provider.name,
       status: "used",
-      occurrenceCount: occurrenceIds.size,
+      occurrenceCount: populatedOccurrenceCount,
       populatedOccurrenceCount,
-      unresolvedOccurrenceCount,
+      unresolvedOccurrenceCount: 0,
       symbolCount: providerKeys.size,
       elapsedMilliseconds: performance.now() - startedAt,
       ...(Object.keys(metrics).length === 0 ? {} : { metrics })
     };
     onLog(
       `[crawler] [info] Symbol graph provider ${provider.name} populated `
-      + `${populatedOccurrenceCount}/${occurrenceIds.size} occurrence(s) in `
+      + `${populatedOccurrenceCount} occurrence(s) from `
+      + `${processedDocumentCount}/${documents.length} document(s) `
+      + `(${missingDocumentCount} missing, ${failedDocumentCount} failed) in `
       + `${Math.round(summary.elapsedMilliseconds)}ms.`
     );
     return summary;
   } catch (error) {
-    database.clearSymbolGraph([...occurrenceIds]);
-    if (!provider.fallbackToLsp) {
-      throw new Error(
-        `Required symbol graph provider ${provider.name} failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        { cause: error }
-      );
-    }
-    const summary: SymbolGraphSummary = {
-      provider: provider.name,
-      status: "fallback",
-      occurrenceCount: occurrenceIds.size,
-      populatedOccurrenceCount: 0,
-      unresolvedOccurrenceCount: occurrenceIds.size,
-      symbolCount: 0,
-      elapsedMilliseconds: performance.now() - startedAt
-    };
-    onLog(
-      `[crawler] [warning] Symbol graph provider ${provider.name} failed; `
-      + `using standard LSP requests: ${
-        error instanceof Error ? error.message : String(error)
-      }`
+    database.clearSymbolGraphForDocuments(
+      [...documentByUri.values()].map((prepared) => prepared.recordId)
     );
-    return summary;
+    throw new Error(
+      `Required symbol graph provider ${provider.name} failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { cause: error }
+    );
   }
 }
 
@@ -550,7 +609,8 @@ async function discoverDocumentCandidates(
   database: CrawlerDatabase,
   config: CrawlerConfig,
   document: WorkspaceDocument,
-  failures: Error[]
+  failures: Error[],
+  counters: CrawlCounters
 ): Promise<PreparedDocument> {
   const content = await readFile(document.absolutePath, "utf8");
   const uri = pathToFileURL(document.absolutePath).href;
@@ -579,7 +639,8 @@ async function discoverDocumentCandidates(
       document.languageId,
       content,
       mapper,
-      failures
+      failures,
+      counters
     );
     for (const candidate of candidates) {
       database.upsertOccurrence({
@@ -598,7 +659,8 @@ async function discoverDocumentCandidates(
       document,
       uri,
       recordId: record.id,
-      occurrenceCount: database.listOccurrences(record.id).length
+      occurrenceCount: database.listOccurrences(record.id).length,
+      contentLength: Buffer.byteLength(content)
     };
   } finally {
     client.notify("textDocument/didClose", { textDocument: { uri } });
@@ -648,7 +710,8 @@ async function discoverCandidates(
   languageId: string,
   content: string,
   mapper: TextCoordinateMapper,
-  failures: Error[]
+  failures: Error[],
+  counters: CrawlCounters
 ): Promise<readonly Candidate[]> {
   const candidates = new Map<string, Candidate>();
   const add = (candidate: Candidate): void => {
@@ -679,7 +742,11 @@ async function discoverCandidates(
         semanticRegistration
       )).forEach(add);
     } catch (error) {
-      failures.push(requestFailure("semantic tokens", uri, error));
+      if (isUnsupportedDocumentFailure(error)) {
+        counters.recoveredRequestFailures++;
+      } else {
+        failures.push(requestFailure("semantic tokens", uri, error));
+      }
     }
   }
   if (client.supports("textDocument/documentSymbol")) {
@@ -691,7 +758,11 @@ async function discoverCandidates(
       );
       documentSymbolCandidates(value, uri).forEach(add);
     } catch (error) {
-      failures.push(requestFailure("document symbols", uri, error));
+      if (isUnsupportedDocumentFailure(error)) {
+        counters.recoveredRequestFailures++;
+      } else {
+        failures.push(requestFailure("document symbols", uri, error));
+      }
     }
   }
   if (config.lexicalFallback) {
@@ -892,7 +963,10 @@ async function probeOccurrence(
       if (
         kind === "references"
         && isRazorLanguage(languageId)
-        && isRazorNamespaceReferenceFailure(error)
+        && (
+          isRazorNamespaceReferenceFailure(error)
+          || isRazorErrorTypeReferenceFailure(error)
+        )
       ) {
         database.saveLocationAnswer(occurrenceId, kind, []);
         counters.recoveredRequestFailures++;
@@ -959,6 +1033,22 @@ function isRazorNamespaceReferenceFailure(error: unknown): boolean {
   return error instanceof LspResponseError
     && error.code === -32000
     && error.message.includes("'symbol' cannot be a namespace");
+}
+
+function isRazorErrorTypeReferenceFailure(error: unknown): boolean {
+  return error instanceof LspResponseError
+    && error.code === -32000
+    && error.message.includes("of type ")
+    && error.message.includes("ErrorTypeSymbol");
+}
+
+function isUnsupportedDocumentFailure(error: unknown): boolean {
+  return error instanceof LspResponseError
+    && error.code === -32000
+    && error.message.includes(
+      "Syntax tree is required to accomplish the task "
+      + "but is not supported by document"
+    );
 }
 
 function isRazorLanguage(languageId: string): boolean {

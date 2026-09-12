@@ -34,7 +34,10 @@ export interface DocumentRecord extends DocumentInput {
 export interface OccurrenceInput {
   readonly documentId: number;
   readonly range: Range;
-  readonly discoverySource: "document-symbol" | "lexical" | "semantic-token";
+  readonly discoverySource:
+    | "document-symbol"
+    | "lexical"
+    | "semantic-token";
   readonly semanticTokenType?: string;
   readonly semanticModifiers?: number;
 }
@@ -290,6 +293,29 @@ export class CrawlerDatabase {
     `).all(documentId).map((row) => occurrenceFromRow(
       row as unknown as OccurrenceRow
     ));
+  }
+
+  public resetDocumentOccurrences(documentIds: readonly number[]): void {
+    if (documentIds.length === 0) {
+      return;
+    }
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const deleteOccurrences = this.#database.prepare(
+        "DELETE FROM occurrences WHERE document_id = ?"
+      );
+      for (const documentId of documentIds) {
+        deleteOccurrences.run(documentId);
+      }
+      if (this.#hasSymbolGraphSchema()) {
+        this.#deleteOrphanedSymbols();
+      }
+      this.#deleteOrphanedAnswerSets();
+      this.#database.exec("COMMIT");
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   public hasCompleteAnswer(

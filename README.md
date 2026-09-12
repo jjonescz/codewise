@@ -83,15 +83,18 @@ npm run index:roslyn:symbols -- --workspace-root C:\path\to\roslyn
 ```
 
 This builds and activates `Codewise.RoslynExtension.dll` through Roslyn's
-extension-message API. The extension resolves C# occurrence positions in
-chunked workspace requests, normalizes and deduplicates their `ISymbol`
-instances, and returns occurrence-to-symbol edges plus source definitions.
+extension-message API. A small, version-pinned friend assembly signed as
+`Microsoft.CodeAnalysis.Workspaces.UnitTests` exposes Roslyn's internal
+language-neutral token semantic facts. The extension receives bounded batches
+of C# document URIs, walks each loaded syntax tree token-by-token, asks Roslyn
+whether each token is bindable and which symbol it declares or references,
+then returns occurrence-to-symbol edges plus source definitions.
 References are answered by reversing those edges in SQLite; the extension does
 not call `SymbolFinder.FindReferencesAsync`.
 
 The symbol graph is authoritative for C#: no per-occurrence reference,
 definition, highlight, or hover LSP requests are issued for C# documents.
-Unresolved C# occurrences remain unresolved, source definitions come from the
+Unresolved occurrences remain unresolved, source definitions come from the
 extension, and symbol display text provides a lightweight plaintext hover.
 Extension activation or dispatch failure fails the crawl instead of silently
 starting the potentially multi-day generic fallback. Visual Basic, Razor, and
@@ -99,15 +102,25 @@ other languages retain standard LSP crawling until they have authoritative
 providers of their own.
 
 The option is experimental and is not the default. In the current benchmark,
-the extension populated 31,555 of 31,843 C# occurrences with 9,587 stable
-symbol identities in about 10 seconds. The complete mixed C#/Razor crawl took
-8 minutes 35 seconds versus 14 minutes 31 seconds on the standard path, and the
-database was 33 MB instead of 291 MB. All 4,285 hover requests and approximately
-1,450 reference and definition requests in that run were for Razor; C# issued
-no per-occurrence LSP requests. Exact symbol identity does not reproduce
+the extension indexed all 118 loaded DotNetLab C# documents with 37,700
+occurrences and 10,825 stable symbols in about 17 seconds. The complete mixed
+C#/Razor crawl took 8 minutes 42 seconds versus 14 minutes 31 seconds on the
+standard path, and the database was 33 MB instead of 291 MB. All 4,295 hover
+requests and approximately 1,450 reference and definition requests in that run
+were for Razor; C# issued no per-occurrence LSP requests. Exact symbol identity does not reproduce
 Roslyn's cascading Find All References semantics: comparison with the standard
 index found 1,086 reference sets split across graph symbols and 159 graph
 symbols spanning multiple standard reference sets.
+
+On `Roslyn.slnx`, the direct walker completed in 9 minutes 19 seconds. It
+indexed 769,671 C# occurrences and 252,958 symbols from 5,977 loaded C#
+documents, while 12,176 tracked C# files were not present in the language
+server's loaded `Solution`. The extension graph took 5 minutes 28 seconds;
+Razor's 6,203 occurrences retained LSP fallback, and 3,749 unsupported VB
+documents were recorded as recovered zero-candidate documents. This is faster
+than the measured 15-minute C#-only `scip-dotnet` run, but not equivalent
+coverage: that SCIP run emitted 7,448,609 occurrences from 29,482
+project-context documents, while its full C#/VB run crashed in the VB walker.
 
 This command restores the pinned `roslyn-language-server` local tool
 automatically before starting the crawl. It also checks that the current

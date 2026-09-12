@@ -193,25 +193,49 @@ describe("crawlWorkspace", () => {
         symbolGraphProvider: {
           name: "test-provider",
           languageIds: new Set(["toy"]),
-          fallbackToLsp: false,
           async populateSymbolGraph(_client, documents, onChunk) {
-            const occurrences = documents.flatMap(
-              (document) => document.occurrences
-            );
+            const uri = documents[0]!.uri;
             onChunk({
               symbols: [{
                 providerKey: "value",
                 displayName: "value",
-                occurrences: occurrences.map((occurrence, index) => ({
-                  occurrenceId: occurrence.id,
-                  isDefinition: index === 0
-                })),
+                occurrences: [
+                  {
+                    uri,
+                    range: {
+                      start: { line: 0, character: 4 },
+                      end: { line: 0, character: 9 }
+                    },
+                    isDefinition: true
+                  },
+                  {
+                    uri,
+                    range: {
+                      start: { line: 1, character: 0 },
+                      end: { line: 1, character: 5 }
+                    },
+                    isDefinition: false
+                  },
+                  {
+                    uri,
+                    range: {
+                      start: { line: 1, character: 6 },
+                      end: { line: 1, character: 11 }
+                    },
+                    isDefinition: false
+                  }
+                ],
                 definitions: [{
-                  uri: documents[0]!.uri,
-                  range: occurrences[0]!.range
+                  uri,
+                  range: {
+                    start: { line: 0, character: 4 },
+                    end: { line: 0, character: 9 }
+                  }
                 }]
               }],
-              unresolvedOccurrenceIds: []
+              processedDocumentUris: [uri],
+              missingDocumentUris: [],
+              failures: []
             });
           }
         }
@@ -236,42 +260,6 @@ describe("crawlWorkspace", () => {
       )).toHaveLength(3);
       index.close();
 
-      const fallbackLogPath = join(directory, "fallback.log");
-      const fallbackSummary = await crawlWorkspace(
-        {
-          ...config,
-          server: {
-            ...config.server,
-            args: [serverPath, fallbackLogPath]
-          }
-        },
-        graphDatabasePath,
-        {
-          symbolGraphProvider: {
-            name: "failing-provider",
-            languageIds: new Set(["toy"]),
-            fallbackToLsp: true,
-            populateSymbolGraph() {
-              throw new LspRequestTimeoutError("test/symbolGraph", 10);
-            }
-          }
-        }
-      );
-      expect(fallbackSummary.symbolGraph).toMatchObject({
-        provider: "failing-provider",
-        status: "fallback",
-        populatedOccurrenceCount: 0
-      });
-      expect((await methodCounts(fallbackLogPath))
-        .get("textDocument/references")).toBeGreaterThan(0);
-      const fallbackDatabase = new DatabaseSync(graphDatabasePath, {
-        readOnly: true
-      });
-      expect(fallbackDatabase.prepare(
-        "SELECT COUNT(*) AS count FROM occurrence_symbols"
-      ).get()).toMatchObject({ count: 0 });
-      fallbackDatabase.close();
-
       const requiredLogPath = join(directory, "required.log");
       await expect(crawlWorkspace(
         {
@@ -286,9 +274,16 @@ describe("crawlWorkspace", () => {
           symbolGraphProvider: {
             name: "required-provider",
             languageIds: new Set(["toy"]),
-            fallbackToLsp: false,
-            populateSymbolGraph() {
-              throw new Error("Expected required provider failure.");
+            async populateSymbolGraph(_client, documents, onChunk) {
+              onChunk({
+                symbols: [],
+                processedDocumentUris: [],
+                missingDocumentUris: [],
+                failures: [{
+                  uri: documents[0]!.uri,
+                  message: "Expected document failure."
+                }]
+              });
             }
           }
         }

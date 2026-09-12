@@ -128,7 +128,7 @@ async function main(): Promise<void> {
     "roslyn-index-extension",
     "bin",
     "Release",
-    "netstandard2.0",
+    "net10.0",
     "Codewise.RoslynExtension.dll"
   );
   statSync(resolve(repositoryRoot, ".config", "dotnet-tools.json"));

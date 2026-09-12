@@ -3,39 +3,40 @@ import type { SymbolGraphDocument } from "@codewise/lsp-crawler";
 import { chunkSymbolGraphDocuments } from "./roslyn-symbol-graph.js";
 
 describe("chunkSymbolGraphDocuments", () => {
-  it("splits documents without exceeding the occurrence limit", () => {
-    const documents: SymbolGraphDocument[] = [
-      createDocument("first", 3, 0),
-      createDocument("second", 8, 3),
-      createDocument("third", 1, 11)
+  it("splits documents by source size without dropping order", () => {
+    const documents = [
+      createDocument("first", 1024 * 1024),
+      createDocument("second", 1536 * 1024),
+      createDocument("third", 512 * 1024)
     ];
 
-    const chunks = chunkSymbolGraphDocuments(documents, 5);
+    const chunks = chunkSymbolGraphDocuments(documents);
 
-    expect(chunks.map((chunk) => chunk.reduce(
-      (count, document) => count + document.occurrences.length,
-      0
-    ))).toEqual([5, 5, 2]);
-    expect(chunks.flatMap((chunk) => chunk).flatMap(
-      (document) => document.occurrences.map((occurrence) => occurrence.id)
-    )).toEqual(Array.from({ length: 12 }, (_, index) => index));
+    expect(chunks.map((chunk) => chunk.map((document) => document.uri)))
+      .toEqual([
+        ["file:///first.cs"],
+        ["file:///second.cs", "file:///third.cs"]
+      ]);
+  });
+
+  it("caps the number of documents in one request", () => {
+    const documents = Array.from(
+      { length: 65 },
+      (_, index) => createDocument(String(index), 1)
+    );
+
+    expect(chunkSymbolGraphDocuments(documents).map((chunk) => chunk.length))
+      .toEqual([64, 1]);
   });
 });
 
 function createDocument(
   name: string,
-  count: number,
-  firstId: number
+  contentLength: number
 ): SymbolGraphDocument {
   return {
     uri: `file:///${name}.cs`,
     languageId: "csharp",
-    occurrences: Array.from({ length: count }, (_, index) => ({
-      id: firstId + index,
-      range: {
-        start: { line: index, character: 0 },
-        end: { line: index, character: 1 }
-      }
-    }))
+    contentLength
   };
 }

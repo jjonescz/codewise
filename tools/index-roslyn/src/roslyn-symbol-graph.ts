@@ -1,12 +1,13 @@
 import {
   type Location,
   type SymbolGraphDocument,
+  type SymbolGraphDocumentFailure,
   type SymbolGraphProvider,
   type SymbolGraphResult,
   type SymbolGraphSymbol
 } from "@codewise/lsp-crawler";
 
-const protocolVersion = 2;
+const protocolVersion = 3;
 const handlerName = "Codewise.RoslynExtension.SymbolGraphHandler";
 const activationMethod = "server/_vs_activateExtension";
 const dispatchMethod = "workspace/_vs_dispatchExtensionMessage";
@@ -14,22 +15,17 @@ const requestTimeoutMilliseconds = 5 * 60_000;
 const projectInitializationTimeoutMilliseconds = 10_000;
 const projectLoadRetryMilliseconds = 2_000;
 const projectLoadAttempts = 15;
-const maximumOccurrencesPerChunk = 50_000;
+const maximumDocumentsPerChunk = 64;
+const maximumSourceBytesPerChunk = 2 * 1024 * 1024;
 
 export function createRoslynSymbolGraphProvider(
-  assemblyFilePath: string,
-  maximumOccurrencesPerRequest = maximumOccurrencesPerChunk
+  assemblyFilePath: string
 ): SymbolGraphProvider {
   return {
     name: "roslyn-symbol-graph",
     languageIds: new Set(["csharp"]),
-    fallbackToLsp: false,
     async populateSymbolGraph(client, documents, onChunk): Promise<void> {
-      const occurrenceCount = documents.reduce(
-        (count, document) => count + document.occurrences.length,
-        0
-      );
-      if (occurrenceCount === 0) {
+      if (documents.length === 0) {
         return;
       }
       const projectInitializationCompleted = await client.waitForNotification(
@@ -55,10 +51,7 @@ export function createRoslynSymbolGraphProvider(
         );
       }
 
-      const chunks = chunkSymbolGraphDocuments(
-        documents,
-        maximumOccurrencesPerRequest
-      );
+      const chunks = chunkSymbolGraphDocuments(documents);
       for (let index = 0; index < chunks.length; index++) {
         const chunk = chunks[index]!;
         const attempts = index === 0 && projectInitializationCompleted
@@ -74,7 +67,7 @@ export function createRoslynSymbolGraphProvider(
           }
           if (attempt === attempts) {
             throw new Error(
-              "Roslyn did not load any requested documents for symbol binding."
+              "Roslyn did not load any requested documents for symbol indexing."
             );
           }
           await delay(projectLoadRetryMilliseconds);
@@ -91,16 +84,7 @@ export function createRoslynSymbolGraphProvider(
               messageName: handlerName,
               message: JSON.stringify({
                 ProtocolVersion: protocolVersion,
-                Documents: chunk.map((document) => ({
-                  Uri: document.uri,
-                  Occurrences: document.occurrences.map((occurrence) => ({
-                    Id: occurrence.id,
-                    StartLine: occurrence.range.start.line,
-                    StartCharacter: occurrence.range.start.character,
-                    EndLine: occurrence.range.end.line,
-                    EndCharacter: occurrence.range.end.character
-                  }))
-                }))
+                Documents: chunk.map((document) => ({ Uri: document.uri }))
               })
             },
             requestTimeoutMilliseconds
@@ -126,34 +110,25 @@ export function createRoslynSymbolGraphProvider(
 }
 
 export function chunkSymbolGraphDocuments(
-  documents: readonly SymbolGraphDocument[],
-  maximumOccurrences: number
+  documents: readonly SymbolGraphDocument[]
 ): SymbolGraphDocument[][] {
-  if (!Number.isSafeInteger(maximumOccurrences) || maximumOccurrences <= 0) {
-    throw new Error("Symbol graph chunk size must be a positive integer.");
-  }
   const chunks: SymbolGraphDocument[][] = [];
   let current: SymbolGraphDocument[] = [];
-  let currentCount = 0;
+  let currentBytes = 0;
   for (const document of documents) {
-    let offset = 0;
-    while (offset < document.occurrences.length) {
-      if (currentCount === maximumOccurrences) {
-        chunks.push(current);
-        current = [];
-        currentCount = 0;
-      }
-      const count = Math.min(
-        maximumOccurrences - currentCount,
-        document.occurrences.length - offset
-      );
-      current.push({
-        ...document,
-        occurrences: document.occurrences.slice(offset, offset + count)
-      });
-      offset += count;
-      currentCount += count;
+    if (
+      current.length > 0
+      && (
+        current.length === maximumDocumentsPerChunk
+        || currentBytes + document.contentLength > maximumSourceBytesPerChunk
+      )
+    ) {
+      chunks.push(current);
+      current = [];
+      currentBytes = 0;
     }
+    current.push(document);
+    currentBytes += document.contentLength;
   }
   if (current.length > 0) {
     chunks.push(current);
@@ -215,9 +190,13 @@ function parseSymbolGraphResponse(json: string): SymbolGraphResult {
     !isObject(value)
     || value["ProtocolVersion"] !== protocolVersion
     || !Array.isArray(value["Symbols"])
-    || !isNumberArray(value["UnresolvedOccurrenceIds"])
+    || !isStringArray(value["ProcessedDocumentUris"])
+    || !isStringArray(value["MissingDocumentUris"])
+    || !Array.isArray(value["Failures"])
     || !isNonNegativeInteger(value["SolutionProjectCount"])
     || !isNonNegativeInteger(value["SolutionDocumentCount"])
+    || !isNonNegativeNumber(value["TokenCount"])
+    || !isNonNegativeNumber(value["OccurrenceCount"])
     || !isNonNegativeNumber(value["SymbolResolutionMilliseconds"])
   ) {
     throw new Error("The Codewise extension returned an invalid symbol graph.");
@@ -225,10 +204,14 @@ function parseSymbolGraphResponse(json: string): SymbolGraphResult {
 
   return {
     symbols: value["Symbols"].map(parseSymbol),
-    unresolvedOccurrenceIds: value["UnresolvedOccurrenceIds"],
+    processedDocumentUris: value["ProcessedDocumentUris"],
+    missingDocumentUris: value["MissingDocumentUris"],
+    failures: value["Failures"].map(parseFailure),
     metrics: {
       solutionProjectCount: value["SolutionProjectCount"],
       solutionDocumentCount: value["SolutionDocumentCount"],
+      tokenCount: value["TokenCount"],
+      occurrenceCount: value["OccurrenceCount"],
       symbolResolutionMilliseconds: value["SymbolResolutionMilliseconds"]
     }
   };
@@ -248,20 +231,50 @@ function parseSymbol(value: unknown): SymbolGraphSymbol {
   return {
     providerKey: value["ProviderKey"],
     displayName: value["DisplayName"],
-    occurrences: value["Occurrences"].map((edge) => {
+    occurrences: value["Occurrences"].map((occurrence) => {
       if (
-        !isObject(edge)
-        || !isNonNegativeInteger(edge["OccurrenceId"])
-        || typeof edge["IsDefinition"] !== "boolean"
+        !isObject(occurrence)
+        || typeof occurrence["Uri"] !== "string"
+        || !isNonNegativeInteger(occurrence["StartLine"])
+        || !isNonNegativeInteger(occurrence["StartCharacter"])
+        || !isNonNegativeInteger(occurrence["EndLine"])
+        || !isNonNegativeInteger(occurrence["EndCharacter"])
+        || typeof occurrence["IsDefinition"] !== "boolean"
       ) {
-        throw new Error("The Codewise extension returned an invalid symbol edge.");
+        throw new Error(
+          "The Codewise extension returned an invalid symbol occurrence."
+        );
       }
       return {
-        occurrenceId: edge["OccurrenceId"],
-        isDefinition: edge["IsDefinition"]
+        uri: occurrence["Uri"],
+        range: {
+          start: {
+            line: occurrence["StartLine"],
+            character: occurrence["StartCharacter"]
+          },
+          end: {
+            line: occurrence["EndLine"],
+            character: occurrence["EndCharacter"]
+          }
+        },
+        isDefinition: occurrence["IsDefinition"]
       };
     }),
     definitions: value["Definitions"].map(parseLocation)
+  };
+}
+
+function parseFailure(value: unknown): SymbolGraphDocumentFailure {
+  if (
+    !isObject(value)
+    || typeof value["Uri"] !== "string"
+    || typeof value["Message"] !== "string"
+  ) {
+    throw new Error("The Codewise extension returned an invalid document failure.");
+  }
+  return {
+    uri: value["Uri"],
+    message: value["Message"]
   };
 }
 
@@ -304,11 +317,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-function isNumberArray(value: unknown): value is number[] {
-  return Array.isArray(value)
-    && value.every((item) => isNonNegativeInteger(item));
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
