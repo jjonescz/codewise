@@ -106,6 +106,7 @@ jobs:
           npm ci
           npm run build:core
           npm run build:crawler
+          npm run build:roslyn-extension
           npm run build:indexer
           dotnet tool restore
 
@@ -128,7 +129,9 @@ jobs:
           ROSLYN_SHA: ${{ inputs.roslyn_sha }}
         run: |
           set -euo pipefail
+          test -s tools/roslyn-index-extension/bin/Release/net10.0/Codewise.RoslynExtension.dll
           node tools/index-roslyn/dist/cli.js \
+            --roslyn-symbol-graph \
             --workspace-root "$GITHUB_WORKSPACE/roslyn" \
             --database "$GITHUB_WORKSPACE/codewise/artifacts/roslyn/$ROSLYN_SHA/index.db"
 

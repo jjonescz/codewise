@@ -101,7 +101,8 @@ starting the potentially multi-day generic fallback. Visual Basic, Razor, and
 other languages retain standard LSP crawling until they have authoritative
 providers of their own.
 
-The option is experimental and is not the default. In the current benchmark,
+The option is experimental and is opt-in locally, but enabled in hosted CI
+indexing. In the current benchmark,
 the extension indexed all 118 loaded DotNetLab C# documents with 37,700
 occurrences and 10,825 stable symbols in about 17 seconds. The complete mixed
 C#/Razor crawl took 8 minutes 42 seconds versus 14 minutes 31 seconds on the
@@ -324,8 +325,12 @@ The standalone Node filesystem and stdio adapters remain isolated in
 
 `.github\workflows\scan-roslyn.yml` scans Roslyn main and open pull request
 heads and dispatches up to four isolated `.github\workflows\index-roslyn.yml`
-runs. Each run builds `Roslyn.slnx`, crawls the official Roslyn language server,
-and uploads `roslyn-codewise-<sha>` for 90 days.
+runs. Each run builds `Roslyn.slnx` and the Roslyn symbol-graph extension,
+crawls the official Roslyn language server with `--roslyn-symbol-graph`,
+and uploads `roslyn-codewise-<sha>` for 90 days. C# uses the fast symbol graph;
+other languages retain standard LSP crawling. The workflow checks that the
+extension assembly exists before crawling to prevent a missing build from
+silently falling back to standard C# LSP requests.
 
 Roslyn source and builds are untrusted. The index job has no repository
 permissions or secrets and fetches both repositories anonymously. The trusted
