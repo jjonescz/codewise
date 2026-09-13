@@ -112,15 +112,19 @@ Roslyn's cascading Find All References semantics: comparison with the standard
 index found 1,086 reference sets split across graph symbols and 159 graph
 symbols spanning multiple standard reference sets.
 
-On `Roslyn.slnx`, the direct walker completed in 9 minutes 19 seconds. It
-indexed 769,671 C# occurrences and 252,958 symbols from 5,977 loaded C#
-documents, while 12,176 tracked C# files were not present in the language
-server's loaded `Solution`. The extension graph took 5 minutes 28 seconds;
-Razor's 6,203 occurrences retained LSP fallback, and 3,749 unsupported VB
-documents were recorded as recovered zero-candidate documents. This is faster
-than the measured 15-minute C#-only `scip-dotnet` run, but not equivalent
-coverage: that SCIP run emitted 7,448,609 occurrences from 29,482
-project-context documents, while its full C#/VB run crashed in the VB walker.
+On a fully restored `Roslyn.slnx`, the direct walker indexed 7,218,071 C#
+occurrences and 1,068,423 symbols from 16,291 processed C# documents in about
+1 hour 18 minutes. The 2.27 GB database is larger than Node's maximum single
+buffer, so manifest hashing streams the file rather than loading it into
+memory. Physical-path coverage closely matches the measured C#-only
+`scip-dotnet` index: Codewise has graph occurrences in 16,260 paths versus
+SCIP's 16,352, with 133 paths only in SCIP and 41 only in Codewise. The language
+server reported just 11 load errors across 8 projects after Roslyn's prescribed
+`Restore.cmd`; the remaining path differences are primarily benchmark,
+Language Server protocol-test, desktop-only, and generated configurations.
+The C#-only SCIP run completed in about 15 minutes and emitted 7,448,609
+occurrences from 29,482 project-context documents, while its full C#/VB run
+crashed in the VB walker.
 
 This command restores the pinned `roslyn-language-server` local tool
 automatically before starting the crawl. It also checks that the current

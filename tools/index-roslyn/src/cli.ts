@@ -2,10 +2,10 @@
 
 import { createHash } from "node:crypto";
 import {
+  createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
-  readFileSync,
   rmSync,
   statSync,
   writeFileSync
@@ -286,7 +286,7 @@ async function main(): Promise<void> {
   if (stat === undefined || !stat.isFile() || stat.size === 0) {
     throw new Error(`The crawler did not produce a database at ${databasePath}.`);
   }
-  const bytes = readFileSync(databasePath);
+  const sha256 = await hashFile(databasePath);
   const manifest: Manifest = {
     schemaVersion: 3,
     repositoryCommit: workspaceCommit,
@@ -299,7 +299,7 @@ async function main(): Promise<void> {
     createdAt: new Date().toISOString(),
     generationDurationMilliseconds: durationMilliseconds,
     byteSize: stat.size,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    sha256,
     statistics: summary.database,
     timings: summary.timings,
     recoveredRequestFailures: summary.recoveredRequestFailures,
@@ -315,6 +315,14 @@ async function main(): Promise<void> {
   );
   printCrawlPerformance(summary);
   console.log(`Manifest: ${manifestPath}`);
+}
+
+async function hashFile(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
 }
 
 function printCrawlPerformance(summary: CrawlSummary): void {
