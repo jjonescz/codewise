@@ -8,6 +8,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <RestoreAdditionalProjectSources>$(RestoreAdditionalProjectSources);https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-eng/nuget/v3/index.json</RestoreAdditionalProjectSources>
     <KeyOriginatorFile>$(PkgMicrosoft_DotNet_Arcade_Sdk)\tools\snk\35MSSharedLib1024.snk</KeyOriginatorFile>
     <PublicSign>true</PublicSign>
   </PropertyGroup>
