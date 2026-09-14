@@ -394,7 +394,21 @@ export class CrawlerDatabase {
           end_line,
           end_character
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        SELECT
+          ?,
+          COALESCE((
+            SELECT MAX(ordinal) + 1 FROM symbol_definitions WHERE symbol_id = ?
+          ), 0),
+          ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM symbol_definitions
+          WHERE symbol_id = ?
+            AND uri = ?
+            AND start_line = ?
+            AND start_character = ?
+            AND end_line = ?
+            AND end_character = ?
+        )
       `);
       for (const symbol of symbols) {
         if (symbol.occurrences.length === 0) {
@@ -410,9 +424,6 @@ export class CrawlerDatabase {
           provider,
           symbol.providerKey
         ).id;
-        this.#database.prepare(
-          "DELETE FROM symbol_definitions WHERE symbol_id = ?"
-        ).run(symbolId);
         for (const occurrence of symbol.occurrences) {
           insertEdge.run(
             occurrence.occurrenceId,
@@ -420,17 +431,23 @@ export class CrawlerDatabase {
             occurrence.isDefinition ? 1 : 0
           );
         }
-        normalizeLocations(symbol.definitions).forEach((definition, ordinal) => {
-          insertDefinition.run(
-            symbolId,
-            ordinal,
+        // Another language may see only metadata for a symbol defined in source.
+        for (const definition of normalizeLocations(symbol.definitions)) {
+          const locationValues = [
             definition.uri,
             definition.range.start.line,
             definition.range.start.character,
             definition.range.end.line,
             definition.range.end.character
+          ];
+          insertDefinition.run(
+            symbolId,
+            symbolId,
+            ...locationValues,
+            symbolId,
+            ...locationValues
           );
-        });
+        }
       }
       this.#database.exec("COMMIT");
     } catch (error) {

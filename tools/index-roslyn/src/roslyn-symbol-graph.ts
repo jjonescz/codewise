@@ -23,7 +23,7 @@ export function createRoslynSymbolGraphProvider(
 ): SymbolGraphProvider {
   return {
     name: "roslyn-symbol-graph",
-    languageIds: new Set(["csharp"]),
+    languageIds: new Set(["csharp", "vb"]),
     async populateSymbolGraph(client, documents, onChunk): Promise<void> {
       if (documents.length === 0) {
         return;

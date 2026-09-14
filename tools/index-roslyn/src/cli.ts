@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import {
   createReadStream,
   createWriteStream,
-  existsSync,
   mkdirSync,
   rmSync,
   statSync,
@@ -29,6 +28,7 @@ import {
 } from "./sdk-preflight.js";
 import { formatTimestampedLogEntry } from "./timestamped-log.js";
 import { createRoslynSymbolGraphProvider } from "./roslyn-symbol-graph.js";
+import { resolveRoslynSymbolGraphAssets } from "./roslyn-symbol-graph-assets.js";
 
 interface Options {
   readonly workspaceRoot: string;
@@ -122,15 +122,9 @@ function parseOptions(args: readonly string[]): Options {
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
   const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
-  const extensionAssemblyPath = resolve(
-    repositoryRoot,
-    "tools",
-    "roslyn-index-extension",
-    "bin",
-    "Release",
-    "net10.0",
-    "Codewise.RoslynExtension.dll"
-  );
+  const symbolGraphAssets = options.roslynSymbolGraph
+    ? resolveRoslynSymbolGraphAssets(repositoryRoot)
+    : undefined;
   statSync(resolve(repositoryRoot, ".config", "dotnet-tools.json"));
   const workspaceCommit = runCapture(
     "git",
@@ -179,6 +173,9 @@ async function main(): Promise<void> {
         "--",
         "--stdio",
         "--autoLoadProjects",
+        ...(symbolGraphAssets?.languageServiceAssemblyPaths.flatMap(
+          (path) => ["--extension", path]
+        ) ?? []),
         "--logLevel",
         "Warning",
         "--telemetryLevel",
@@ -225,16 +222,9 @@ async function main(): Promise<void> {
   console.log(
     `Log: ${logPath}${mirrorServerLogs ? " (mirrored to stderr in CI)" : ""}`
   );
-  const symbolGraphProvider = options.roslynSymbolGraph
-    && existsSync(extensionAssemblyPath)
-    ? createRoslynSymbolGraphProvider(extensionAssemblyPath)
-    : undefined;
-  if (options.roslynSymbolGraph && symbolGraphProvider === undefined) {
-    console.warn(
-      `Roslyn symbol graph extension not found at ${extensionAssemblyPath}; `
-      + "using standard LSP reference requests."
-    );
-  }
+  const symbolGraphProvider = symbolGraphAssets === undefined
+    ? undefined
+    : createRoslynSymbolGraphProvider(symbolGraphAssets.assemblyFilePath);
   const startedAt = performance.now();
   let summary: CrawlSummary;
   try {

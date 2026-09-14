@@ -86,20 +86,33 @@ This builds and activates `Codewise.RoslynExtension.dll` through Roslyn's
 extension-message API. A small, version-pinned friend assembly signed as
 `Microsoft.CodeAnalysis.Workspaces.UnitTests` exposes Roslyn's internal
 language-neutral token semantic facts. The extension receives bounded batches
-of C# document URIs, walks each loaded syntax tree token-by-token, asks Roslyn
-whether each token is bindable and which symbol it declares or references,
+of C# and Visual Basic document URIs, walks each loaded syntax tree token-by-token,
+asks Roslyn whether each token is bindable and which symbol it declares or references,
 then returns occurrence-to-symbol edges plus source definitions.
 References are answered by reversing those edges in SQLite; the extension does
 not call `SymbolFinder.FindReferencesAsync`.
 
-The symbol graph is authoritative for C#: no per-occurrence reference,
-definition, highlight, or hover LSP requests are issued for C# documents.
+The symbol graph is authoritative for C# and Visual Basic: no per-occurrence
+reference, definition, highlight, or hover LSP requests are issued for those documents.
 Unresolved occurrences remain unresolved, source definitions come from the
 extension, and symbol display text provides a lightweight plaintext hover.
 Extension activation or dispatch failure fails the crawl instead of silently
-starting the potentially multi-day generic fallback. Visual Basic, Razor, and
-other languages retain standard LSP crawling until they have authoritative
-providers of their own.
+starting the potentially multi-day generic fallback. Razor and other languages
+retain standard LSP crawling until they have authoritative providers of their own.
+
+The extension build downloads the matching VB compiler and Workspaces assemblies
+from the public `dotnet-tools` NuGet feed. Fast mode loads these through the
+language server's startup `--extension` options, before workspace creation;
+runtime activation of the symbol-graph handler alone cannot add VB services.
+The two assemblies are kept in a separate directory without duplicate host
+dependencies. A missing assembly fails before existing index artifacts are
+replaced. Include VB projects in the workspace's solution: the pinned server's
+standalone project discovery only searches for C# projects.
+
+Public symbols and their parameters use language-independent identities so
+references between C# and VB join the same graph symbol, including when the
+referencing compiler exposes the target as metadata. Source definitions are
+merged across batches rather than discarded by metadata-only references.
 
 The option is experimental and is opt-in locally, but enabled in hosted CI
 indexing. In the current benchmark,
@@ -180,6 +193,13 @@ Run the real-index stdio checks:
 
 ```powershell
 npm run smoke:roslyn
+```
+
+Run the small real-server C#/VB indexing regression test, including
+cross-language definitions, references, named arguments, and VB locals:
+
+```powershell
+npm run test:indexer
 ```
 
 Run the extension in an isolated VS Code Extension Host:
@@ -327,10 +347,11 @@ The standalone Node filesystem and stdio adapters remain isolated in
 heads and dispatches up to four isolated `.github\workflows\index-roslyn.yml`
 runs. Each run builds `Roslyn.slnx` and the Roslyn symbol-graph extension,
 crawls the official Roslyn language server with `--roslyn-symbol-graph`,
-and uploads `roslyn-codewise-<sha>` for 90 days. C# uses the fast symbol graph;
+and uploads `roslyn-codewise-<sha>` for 90 days. C# and VB use the fast symbol graph;
 other languages retain standard LSP crawling. The workflow checks that the
-extension assembly exists before crawling to prevent a missing build from
-silently falling back to standard C# LSP requests.
+extension assembly exists before crawling, and the indexer also validates the
+VB language-service assemblies, to prevent a missing build from silently
+falling back to standard LSP requests.
 
 Roslyn source and builds are untrusted. The index job has no repository
 permissions or secrets and fetches both repositories anonymously. The trusted

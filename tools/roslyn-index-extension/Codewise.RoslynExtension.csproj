@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <RoslynLanguageServerVersion>5.12.0-1.26426.8</RoslynLanguageServerVersion>
+    <RestoreAdditionalProjectSources>$(RestoreAdditionalProjectSources);https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-tools/nuget/v3/index.json</RestoreAdditionalProjectSources>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,19 +16,37 @@
       Version="[5.0.0-1.25277.114]" />
     <PackageDownload
       Include="roslyn-language-server.win-x64"
-      Version="[5.12.0-1.26426.8]" />
+      Version="[$(RoslynLanguageServerVersion)]" />
+    <PackageDownload
+      Include="Microsoft.CodeAnalysis.VisualBasic"
+      Version="[$(RoslynLanguageServerVersion)]" />
+    <PackageDownload
+      Include="Microsoft.CodeAnalysis.VisualBasic.Workspaces"
+      Version="[$(RoslynLanguageServerVersion)]" />
     <Reference
       Include="Microsoft.CodeAnalysis.ExternalAccess.Extensions"
       HintPath="$(NuGetPackageRoot)microsoft.codeanalysis.externalaccess.extensions/5.0.0-1.25277.114/lib/netstandard2.0/Microsoft.CodeAnalysis.ExternalAccess.Extensions.dll"
       Private="false" />
     <Reference
       Include="Microsoft.CodeAnalysis"
-      HintPath="$(NuGetPackageRoot)roslyn-language-server.win-x64/5.12.0-1.26426.8/tools/net10.0/win-x64/Microsoft.CodeAnalysis.dll"
+      HintPath="$(NuGetPackageRoot)roslyn-language-server.win-x64/$(RoslynLanguageServerVersion)/tools/net10.0/win-x64/Microsoft.CodeAnalysis.dll"
       Private="false" />
     <Reference
       Include="Microsoft.CodeAnalysis.Workspaces"
-      HintPath="$(NuGetPackageRoot)roslyn-language-server.win-x64/5.12.0-1.26426.8/tools/net10.0/win-x64/Microsoft.CodeAnalysis.Workspaces.dll"
+      HintPath="$(NuGetPackageRoot)roslyn-language-server.win-x64/$(RoslynLanguageServerVersion)/tools/net10.0/win-x64/Microsoft.CodeAnalysis.Workspaces.dll"
       Private="false" />
+  </ItemGroup>
+
+  <!-- The VB sidecar must reuse the host's shared Roslyn and MEF dependencies. -->
+  <ItemGroup>
+    <None
+      Include="$(NuGetPackageRoot)microsoft.codeanalysis.visualbasic/$(RoslynLanguageServerVersion)/lib/net10.0/Microsoft.CodeAnalysis.VisualBasic.dll"
+      Link="visual-basic/Microsoft.CodeAnalysis.VisualBasic.dll"
+      CopyToOutputDirectory="PreserveNewest" />
+    <None
+      Include="$(NuGetPackageRoot)microsoft.codeanalysis.visualbasic.workspaces/$(RoslynLanguageServerVersion)/lib/net10.0/Microsoft.CodeAnalysis.VisualBasic.Workspaces.dll"
+      Link="visual-basic/Microsoft.CodeAnalysis.VisualBasic.Workspaces.dll"
+      CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

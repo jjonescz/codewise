@@ -284,29 +284,55 @@ public sealed class SymbolGraphHandler
     {
         var identity = new StringBuilder()
             .Append(symbol.ContainingAssembly?.Identity.ToString() ?? "")
-            .Append('\0')
-            .Append(symbol.GetDocumentationCommentId() ?? "")
-            .Append('\0')
-            .Append(symbol.Kind)
-            .Append('\0')
-            .Append(symbol.MetadataName)
-            .Append('\0')
-            .Append(symbol.ContainingSymbol?.GetDocumentationCommentId() ?? "")
-            .Append('\0')
-            .Append(symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
-        foreach (var definition in definitions)
+            .Append('\0');
+        var documentationId = symbol.GetDocumentationCommentId();
+        if (documentationId is not null)
+        {
+            // Source and metadata views must share an ID across C# and VB.
+            identity.Append(documentationId);
+        }
+        else if (symbol is IParameterSymbol parameter)
+        {
+            identity.Append("parameter\0")
+                .Append(CreateProviderKey(
+                    parameter.ContainingSymbol,
+                    GetDefinitions(parameter.ContainingSymbol)))
+                .Append('\0')
+                .Append(parameter.Ordinal);
+        }
+        else if (symbol is ITypeParameterSymbol typeParameter)
+        {
+            identity.Append("type-parameter\0")
+                .Append(CreateProviderKey(
+                    typeParameter.ContainingSymbol,
+                    GetDefinitions(typeParameter.ContainingSymbol)))
+                .Append('\0')
+                .Append(typeParameter.Ordinal);
+        }
+        else
         {
             identity
+                .Append(symbol.Kind)
                 .Append('\0')
-                .Append(definition.Uri)
-                .Append(':')
-                .Append(definition.StartLine)
-                .Append(':')
-                .Append(definition.StartCharacter)
-                .Append(':')
-                .Append(definition.EndLine)
-                .Append(':')
-                .Append(definition.EndCharacter);
+                .Append(symbol.MetadataName)
+                .Append('\0')
+                .Append(symbol.ContainingSymbol?.GetDocumentationCommentId() ?? "")
+                .Append('\0')
+                .Append(symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
+            foreach (var definition in definitions)
+            {
+                identity
+                    .Append('\0')
+                    .Append(definition.Uri)
+                    .Append(':')
+                    .Append(definition.StartLine)
+                    .Append(':')
+                    .Append(definition.StartCharacter)
+                    .Append(':')
+                    .Append(definition.EndLine)
+                    .Append(':')
+                    .Append(definition.EndCharacter);
+            }
         }
         using var sha256 = SHA256.Create();
         var bytes = sha256.ComputeHash(

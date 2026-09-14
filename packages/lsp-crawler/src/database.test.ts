@@ -201,4 +201,59 @@ describe("CrawlerDatabase", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("preserves source definitions when a later language sees a metadata symbol", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-index-cross-language-"));
+    const database = new CrawlerDatabase(join(directory, "index.db"));
+    try {
+      const range = {
+        start: { line: 0, character: 0 },
+        end: { line: 0, character: 5 }
+      };
+      const occurrences = [
+        { relativePath: "source.cs", languageId: "csharp" },
+        { relativePath: "consumer.vb", languageId: "vb" }
+      ].map((input) => {
+        const uri = `file:///workspace/${input.relativePath}`;
+        const document = database.upsertDocument({
+          ...input,
+          uri,
+          contentHash: "content",
+          positionEncoding: "utf-16"
+        });
+        const occurrence = database.upsertOccurrence({
+          documentId: document.id,
+          range,
+          discoverySource: "semantic-token"
+        });
+        return { uri, occurrence };
+      });
+      const definition = occurrences[0]!;
+      const reference = occurrences[1]!;
+      database.saveSymbolGraph("test", [definition.occurrence.id], [{
+        providerKey: "shared-symbol",
+        occurrences: [{
+          occurrenceId: definition.occurrence.id,
+          isDefinition: true
+        }],
+        definitions: [{ uri: definition.uri, range }]
+      }]);
+      database.saveSymbolGraph("test", [reference.occurrence.id], [{
+        providerKey: "shared-symbol",
+        occurrences: [{
+          occurrenceId: reference.occurrence.id,
+          isDefinition: false
+        }],
+        definitions: []
+      }]);
+
+      expect(database.hasCompleteAnswer(definition.occurrence.id, "definition"))
+        .toBe(true);
+      expect(database.hasCompleteAnswer(reference.occurrence.id, "definition"))
+        .toBe(true);
+    } finally {
+      database.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
