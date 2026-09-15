@@ -54,4 +54,15 @@
       Include="..\roslyn-internal-access\Codewise.RoslynInternalAccess.csproj" />
   </ItemGroup>
 
+  <!-- Roslyn groups language-service load contexts by directory. -->
+  <Target Name="CopyVisualBasicParserAdapter" AfterTargets="CopyFilesToOutputDirectory">
+    <Copy
+      SourceFiles="$(TargetDir)Microsoft.CodeAnalysis.Workspaces.UnitTests.dll"
+      DestinationFolder="$(TargetDir)visual-basic"
+      SkipUnchangedFiles="true" />
+    <ItemGroup>
+      <FileWrites Include="$(TargetDir)visual-basic/Microsoft.CodeAnalysis.Workspaces.UnitTests.dll" />
+    </ItemGroup>
+  </Target>
+
 </Project>

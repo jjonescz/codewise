@@ -20,7 +20,8 @@ export function resolveRoslynSymbolGraphAssets(
   const assemblyFilePath = join(outputDirectory, "Codewise.RoslynExtension.dll");
   const languageServiceAssemblyPaths = [
     "Microsoft.CodeAnalysis.VisualBasic.dll",
-    "Microsoft.CodeAnalysis.VisualBasic.Workspaces.dll"
+    "Microsoft.CodeAnalysis.VisualBasic.Workspaces.dll",
+    "Microsoft.CodeAnalysis.Workspaces.UnitTests.dll"
   ].map((name) => join(outputDirectory, "visual-basic", name));
   for (const path of [assemblyFilePath, ...languageServiceAssemblyPaths]) {
     const stat = statSync(path, { throwIfNoEntry: false });

@@ -196,7 +196,10 @@ npm run smoke:roslyn
 ```
 
 Run the small real-server C#/VB indexing regression test, including
-cross-language definitions, references, named arguments, and VB locals:
+cross-language definitions, references, named arguments, VB locals, and
+conditional compilation constants. The VB language-service adapter restores
+quote escapes normalized by MSBuild on Unix so string-valued constants (including
+the SDK's `_MyType="Empty"`) reach Roslyn intact:
 
 ```powershell
 npm run test:indexer

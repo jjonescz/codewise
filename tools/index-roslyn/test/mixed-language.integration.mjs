@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFailed } from "vitest";
 import { CodeIndex } from "@codewise/index-core";
 
 const execute = promisify(execFile);
@@ -34,13 +34,15 @@ public static class CSharpApi
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace></RootNamespace>
     <OptionStrict>On</OptionStrict>
+    <DefineConstants>$(DefineConstants),INDEX_FLAVOR=&quot;mixed/path/&quot;,INDEX_VERSION=3</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../CSharpApi/CSharpApi.csproj" />
   </ItemGroup>
 </Project>
 `,
-  "VisualBasic/VbApi.vb": `Namespace Mixed
+  "VisualBasic/VbApi.vb": `#If DEBUG AndAlso NET10_0 AndAlso INDEX_FLAVOR = "mixed/path/" AndAlso INDEX_VERSION = 3 Then
+Namespace Mixed
     Public Class VbApi
         Public Shared Function Compute(value As Integer) As Integer
             Dim nextValue = CSharpApi.Increment(amount:=value)
@@ -48,6 +50,7 @@ public static class CSharpApi
         End Function
     End Class
 End Namespace
+#End If
 `,
   "CSharpCaller/CSharpCaller.csproj": `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
@@ -102,6 +105,8 @@ describe("Roslyn mixed-language symbol graph", () => {
         maxBuffer: 4 * 1024 * 1024
       });
 
+      const log = await readFile(join(directory, "artifacts", "lsp-crawler.log"), "utf8");
+      onTestFailed(() => console.error(log));
       const manifest = JSON.parse(await readFile(
         join(directory, "artifacts", "manifest.json"),
         "utf8"
@@ -119,8 +124,7 @@ describe("Roslyn mixed-language symbol graph", () => {
       expect(manifest.requestStatistics.filter(
         (entry) => entry.method.startsWith("textDocument/")
       )).toEqual([]);
-      expect(await readFile(join(directory, "artifacts", "lsp-crawler.log"), "utf8"))
-        .not.toContain("Syntax tree is required");
+      expect(log).not.toContain("Syntax tree is required");
 
       const database = new DatabaseSync(databasePath, { readOnly: true });
       const index = new CodeIndex({

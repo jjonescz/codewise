@@ -7,11 +7,12 @@ import { resolveRoslynSymbolGraphAssets } from "./roslyn-symbol-graph-assets.js"
 const relativeAssets = [
   "Codewise.RoslynExtension.dll",
   join("visual-basic", "Microsoft.CodeAnalysis.VisualBasic.dll"),
-  join("visual-basic", "Microsoft.CodeAnalysis.VisualBasic.Workspaces.dll")
+  join("visual-basic", "Microsoft.CodeAnalysis.VisualBasic.Workspaces.dll"),
+  join("visual-basic", "Microsoft.CodeAnalysis.Workspaces.UnitTests.dll")
 ];
 
 describe("resolveRoslynSymbolGraphAssets", () => {
-  it("resolves the walker and colocated VB language services", async () => {
+  it("resolves the walker, VB language services, and command-line parser adapter", async () => {
     const directory = await mkdtemp(join(tmpdir(), "codewise-roslyn-assets-"));
     try {
       const paths = await createAssets(directory);
@@ -20,7 +21,7 @@ describe("resolveRoslynSymbolGraphAssets", () => {
         assemblyFilePath: paths[0],
         languageServiceAssemblyPaths: paths.slice(1)
       });
-      expect(dirname(paths[1]!)).toBe(dirname(paths[2]!));
+      expect(new Set(paths.slice(1).map((path) => dirname(path))).size).toBe(1);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

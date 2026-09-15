@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
-    <RestoreAdditionalProjectSources>$(RestoreAdditionalProjectSources);https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-eng/nuget/v3/index.json</RestoreAdditionalProjectSources>
+    <RestoreAdditionalProjectSources>$(RestoreAdditionalProjectSources);https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-eng/nuget/v3/index.json;https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-tools/nuget/v3/index.json</RestoreAdditionalProjectSources>
     <KeyOriginatorFile>$(PkgMicrosoft_DotNet_Arcade_Sdk)\tools\snk\35MSSharedLib1024.snk</KeyOriginatorFile>
     <PublicSign>true</PublicSign>
   </PropertyGroup>
@@ -16,6 +16,9 @@
   <ItemGroup>
     <PackageDownload
       Include="roslyn-language-server.win-x64"
+      Version="[5.12.0-1.26426.8]" />
+    <PackageDownload
+      Include="Microsoft.CodeAnalysis.VisualBasic"
       Version="[5.12.0-1.26426.8]" />
     <PackageReference
       Include="Microsoft.DotNet.Arcade.Sdk"
@@ -30,6 +33,14 @@
     <Reference
       Include="Microsoft.CodeAnalysis.Workspaces"
       HintPath="$(NuGetPackageRoot)roslyn-language-server.win-x64/5.12.0-1.26426.8/tools/net10.0/win-x64/Microsoft.CodeAnalysis.Workspaces.dll"
+      Private="false" />
+    <Reference
+      Include="Microsoft.CodeAnalysis.VisualBasic"
+      HintPath="$(NuGetPackageRoot)microsoft.codeanalysis.visualbasic/5.12.0-1.26426.8/lib/net10.0/Microsoft.CodeAnalysis.VisualBasic.dll"
+      Private="false" />
+    <Reference
+      Include="System.Composition.AttributedModel"
+      HintPath="$(NuGetPackageRoot)roslyn-language-server.win-x64/5.12.0-1.26426.8/tools/net10.0/win-x64/System.Composition.AttributedModel.dll"
       Private="false" />
   </ItemGroup>
 
