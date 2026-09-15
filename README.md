@@ -348,7 +348,7 @@ The standalone Node filesystem and stdio adapters remain isolated in
 
 `.github\workflows\scan-roslyn.yml` scans Roslyn main and open pull request
 heads and dispatches up to four isolated `.github\workflows\index-roslyn.yml`
-runs. Each run builds `Roslyn.slnx` and the Roslyn symbol-graph extension,
+runs by default. Each run builds `Roslyn.slnx` and the Roslyn symbol-graph extension,
 crawls the official Roslyn language server with `--roslyn-symbol-graph`,
 and uploads `roslyn-codewise-<sha>` for 90 days. C# and VB use the fast symbol graph;
 other languages retain standard LSP crawling. The workflow checks that the
@@ -366,4 +366,14 @@ schemas and extension loading, and validate the complete schema before queries.
 The trusted scanner creates the `state` branch and `index-state.json`
 automatically on its first run. Scheduled scans run only when the repository variable
 `ENABLE_SCHEDULED_INDEXING` is `true`. Manual **Scan Roslyn** runs remain
-available, including the `reset_sha` retry input.
+available with these optional inputs:
+
+- `max_indexes`: Maximum indexing runs dispatched by this scan (a positive integer,
+  default `4`). Set it to `1` for testing: main is considered first; if it is already
+  indexed or otherwise ineligible, the scanner selects the next eligible open PR
+  head instead. Existing artifact-retention and retry rules still apply.
+- `reset_sha`: Retry one currently active SHA regardless of saved state. This SHA
+  takes priority within `max_indexes`; combine it with `max_indexes: 1` to retry
+  only that commit.
+
+Scheduled scans keep the default limit of four indexing runs per scan.

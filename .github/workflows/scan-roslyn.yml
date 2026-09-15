@@ -5,6 +5,11 @@ on:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
+      max_indexes:
+        description: Maximum indexing runs to dispatch (positive integer; 1 for testing)
+        required: false
+        default: "4"
+        type: string
       reset_sha:
         description: Retry one currently active SHA regardless of saved state
         required: false
@@ -19,7 +24,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MAX_INDEXES_PER_RUN: "4"
+  MAX_INDEXES_PER_RUN: ${{ inputs.max_indexes || '4' }}
   MAX_ATTEMPTS: "3"
   RETRY_AFTER_HOURS: "12"
 
