@@ -1,57 +1,18 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-09-12T19:44:50.409Z",
+  "updatedAt": "2026-09-15T11:26:22.809Z",
   "entries": {
-    "55d133108e69e1ae01d9a6a66669306c43acaee7": {
+    "2e953c46d6cdf9e8e6944a55e253b8dc9e230df9": {
       "candidate": {
-        "sha": "55d133108e69e1ae01d9a6a66669306c43acaee7",
+        "sha": "2e953c46d6cdf9e8e6944a55e253b8dc9e230df9",
         "sourceKind": "main",
         "sourceRef": "refs/heads/main",
         "sourceLabel": "main"
       },
-      "status": "failed",
+      "status": "queued",
       "attempts": 1,
-      "lastAttemptAt": "2026-09-12T19:34:38.198Z",
-      "lastConclusion": "failure"
-    },
-    "5d46d2d541d0a8da3d12b176c92fd3a00fcc30ad": {
-      "candidate": {
-        "sha": "5d46d2d541d0a8da3d12b176c92fd3a00fcc30ad",
-        "sourceKind": "pull-request",
-        "sourceRef": "refs/pull/85271/head",
-        "sourceLabel": "PR #85271",
-        "pullRequestNumber": 85271
-      },
-      "status": "failed",
-      "attempts": 1,
-      "lastAttemptAt": "2026-09-12T19:42:38.891Z",
-      "lastConclusion": "failure"
-    },
-    "ab264ac2f6fcbd0a2c9cd29501f780b9806c218a": {
-      "candidate": {
-        "sha": "ab264ac2f6fcbd0a2c9cd29501f780b9806c218a",
-        "sourceKind": "pull-request",
-        "sourceRef": "refs/pull/85268/head",
-        "sourceLabel": "PR #85268",
-        "pullRequestNumber": 85268
-      },
-      "status": "failed",
-      "attempts": 1,
-      "lastAttemptAt": "2026-09-12T18:11:20.614Z",
-      "lastConclusion": "failure"
-    },
-    "206d3563ca7df13ede0d9df485e7a64d29bd3cd4": {
-      "candidate": {
-        "sha": "206d3563ca7df13ede0d9df485e7a64d29bd3cd4",
-        "sourceKind": "pull-request",
-        "sourceRef": "refs/pull/85017/head",
-        "sourceLabel": "PR #85017",
-        "pullRequestNumber": 85017
-      },
-      "attempts": 1,
-      "lastAttemptAt": "2026-09-12T19:44:50.409Z",
-      "lastConclusion": "failure",
-      "status": "failed"
+      "lastAttemptAt": "2026-09-15T11:26:22.809Z",
+      "lastConclusion": "queued"
     }
   }
 }
