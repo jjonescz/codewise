@@ -92,6 +92,13 @@ then returns occurrence-to-symbol edges plus source definitions.
 References are answered by reversing those edges in SQLite; the extension does
 not call `SymbolFinder.FindReferencesAsync`.
 
+Symbol-graph requests run sequentially in batches of at most 64 documents or
+2 MiB of source (an oversized document is sent alone). `--concurrency` controls
+document preparation and standard LSP crawling, not these requests. Each returned
+chunk commits occurrences, symbols, definitions, and edges in one SQLite
+transaction, reusing occurrence statements and avoiding whole-index orphan
+cleanup during append-only ingestion. Duplicate edges fail the chunk atomically.
+
 The symbol graph is authoritative for C# and Visual Basic: no per-occurrence
 reference, definition, highlight, or hover LSP requests are issued for those documents.
 Unresolved occurrences remain unresolved, source definitions come from the
@@ -113,6 +120,9 @@ Public symbols and their parameters use language-independent identities so
 references between C# and VB join the same graph symbol, including when the
 referencing compiler exposes the target as metadata. Source definitions are
 merged across batches rather than discarded by metadata-only references.
+Generic parameters are identified by their containing symbol and ordinal.
+Ownerless VB documentation-comment `cref` parameters instead use source-scoped
+identities, without requesting unsupported documentation IDs.
 
 The option is experimental and is opt-in locally, but enabled in hosted CI
 indexing. In the current benchmark,
@@ -154,6 +164,11 @@ diagnostics are written only to that file; the terminal shows concise crawl
 progress and the final index summary. When `CI=true` or `GITHUB_ACTIONS=true`,
 diagnostics are also mirrored to stderr so a failed job retains them even if it
 never reaches artifact upload.
+Symbol-graph logs include each request's chunk number and document count, followed
+by processed/missing/failed counts and request, server, and ingestion durations.
+Request time includes response decoding; server time is the extension's reported
+handler duration, not a CPU measurement. These durations overlap and should not
+be added together.
 
 Periodic crawl progress includes elapsed time, document throughput, and an
 estimated remaining time. The final summary reports separate timings for
@@ -164,6 +179,10 @@ cumulative, average, p95, and maximum latency; these request statistics are
 persisted in the generated manifest. Per-method error-response counts include
 errors that the crawler can recover from; the separate crawl-failure and
 recovered-failure totals show their final disposition.
+Provider activation, dispatch, document, and ingestion failures also produce a
+partial performance summary, including accumulated chunk metrics and cleanup
+time. A failed graph's occurrence/symbol counts describe ingestion before
+cleanup, not a usable index; the crawl still fails and no manifest is published.
 
 Candidate discovery completes for the workspace before occurrence probing
 starts. This lets one references response populate matching occurrences across

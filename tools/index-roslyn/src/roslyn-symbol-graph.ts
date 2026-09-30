@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import {
   type Location,
   type SymbolGraphDocument,
@@ -24,7 +25,12 @@ export function createRoslynSymbolGraphProvider(
   return {
     name: "roslyn-symbol-graph",
     languageIds: new Set(["csharp", "vb"]),
-    async populateSymbolGraph(client, documents, onChunk): Promise<void> {
+    async populateSymbolGraph(
+      client,
+      documents,
+      onChunk,
+      onLog = () => undefined
+    ): Promise<void> {
       if (documents.length === 0) {
         return;
       }
@@ -57,12 +63,23 @@ export function createRoslynSymbolGraphProvider(
         const attempts = index === 0 && projectInitializationCompleted
           ? projectLoadAttempts
           : 1;
+        let requestMilliseconds = 0;
         for (let attempt = 1; attempt <= attempts; attempt++) {
+          onLog(
+            `[crawler] [info] Requesting Roslyn symbol graph chunk `
+            + `${index + 1}/${chunks.length}, attempt ${attempt}/${attempts} `
+            + `(${chunk.length} document(s)).`
+          );
+          const startedAt = performance.now();
           const result = await dispatchSymbolGraphRequest(chunk);
+          requestMilliseconds += performance.now() - startedAt;
           const projectCount =
             result.metrics?.["solutionProjectCount"] ?? 0;
           if (projectCount > 0) {
-            onChunk(result);
+            onChunk({
+              ...result,
+              metrics: { ...result.metrics, requestMilliseconds }
+            });
             break;
           }
           if (attempt === attempts) {

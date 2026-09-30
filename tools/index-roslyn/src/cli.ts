@@ -321,6 +321,12 @@ function printCrawlPerformance(summary: CrawlSummary): void {
     + `${summary.recoveredRequestFailures.toLocaleString()} recovered`
   );
   if (summary.symbolGraph !== undefined) {
+    if (summary.symbolGraph.status === "failed") {
+      console.log(
+        "Symbol graph counts below describe ingestion before failure cleanup, "
+        + "not a usable index."
+      );
+    }
     console.log(
       `Symbol graph (${summary.symbolGraph.provider}): `
       + `${summary.symbolGraph.status}; `

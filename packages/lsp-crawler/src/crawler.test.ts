@@ -9,7 +9,7 @@ import {
   LspRequestTimeoutError
 } from "./client.js";
 import type { CrawlerConfig } from "./config.js";
-import { crawlWorkspace } from "./crawler.js";
+import { CrawlError, crawlWorkspace } from "./crawler.js";
 
 describe("crawlWorkspace", () => {
   it("indexes local references and resumes completed probes", async () => {
@@ -163,7 +163,7 @@ describe("crawlWorkspace", () => {
     }
   });
 
-  it("uses a symbol graph provider and falls back when it fails", async () => {
+  it("uses a symbol graph provider and preserves diagnostics without falling back on failure", async () => {
     const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-symbols-"));
     try {
       const content = "let value = 1;\nprint(value);\n";
@@ -189,7 +189,9 @@ describe("crawlWorkspace", () => {
         lexicalFallback: false
       };
       const graphDatabasePath = join(directory, "graph.db");
+      const messages: string[] = [];
       const graphSummary = await crawlWorkspace(config, graphDatabasePath, {
+        onLog: (message) => messages.push(message),
         symbolGraphProvider: {
           name: "test-provider",
           languageIds: new Set(["toy"]),
@@ -235,7 +237,11 @@ describe("crawlWorkspace", () => {
               }],
               processedDocumentUris: [uri],
               missingDocumentUris: [],
-              failures: []
+              failures: [],
+              metrics: {
+                requestMilliseconds: 12,
+                symbolResolutionMilliseconds: 10
+              }
             });
           }
         }
@@ -244,8 +250,21 @@ describe("crawlWorkspace", () => {
         provider: "test-provider",
         status: "used",
         populatedOccurrenceCount: 3,
-        symbolCount: 1
+        symbolCount: 1,
+        metrics: {
+          chunkCount: 1,
+          processedDocumentCount: 1,
+          requestMilliseconds: 12,
+          symbolResolutionMilliseconds: 10
+        }
       });
+      expect(graphSummary.symbolGraph?.metrics?.["ingestionMilliseconds"])
+        .toBeGreaterThanOrEqual(0);
+      expect(messages.some((message) => (
+        message.includes("Symbol graph chunk 1:")
+        && message.includes("3 occurrence(s) committed")
+        && message.includes("request 12ms, server 10ms, ingestion")
+      ))).toBe(true);
       expect((await methodCounts(join(directory, "server.log")))
         .get("textDocument/references") ?? 0).toBe(0);
       expect((await methodCounts(join(directory, "server.log")))
@@ -261,7 +280,7 @@ describe("crawlWorkspace", () => {
       index.close();
 
       const requiredLogPath = join(directory, "required.log");
-      await expect(crawlWorkspace(
+      const failure = crawlWorkspace(
         {
           ...config,
           server: {
@@ -271,6 +290,7 @@ describe("crawlWorkspace", () => {
         },
         join(directory, "required.db"),
         {
+          onLog: (message) => messages.push(message),
           symbolGraphProvider: {
             name: "required-provider",
             languageIds: new Set(["toy"]),
@@ -282,18 +302,164 @@ describe("crawlWorkspace", () => {
                 failures: [{
                   uri: documents[0]!.uri,
                   message: "Expected document failure."
-                }]
+                }],
+                metrics: {
+                  requestMilliseconds: 6,
+                  symbolResolutionMilliseconds: 5
+                }
               });
             }
           }
         }
-      )).rejects.toThrow("Required symbol graph provider");
+      );
+      await expect(failure).rejects.toBeInstanceOf(CrawlError);
+      await expect(failure).rejects.toMatchObject({
+        message: expect.stringContaining("Required symbol graph provider"),
+        summary: {
+          documentsCompleted: 0,
+          requestFailures: 1,
+          symbolGraph: {
+            provider: "required-provider",
+            status: "failed",
+            metrics: {
+              chunkCount: 1,
+              failedDocumentCount: 1,
+              requestMilliseconds: 6,
+              symbolResolutionMilliseconds: 5,
+              ingestionMilliseconds: expect.any(Number),
+              cleanupMilliseconds: expect.any(Number)
+            }
+          },
+          timings: {
+            symbolGraphMilliseconds: expect.any(Number),
+            totalMilliseconds: expect.any(Number)
+          },
+          requestStatistics: expect.arrayContaining([
+            expect.objectContaining({ method: "initialize", succeeded: 1 })
+          ])
+        }
+      });
+      expect(messages).toContainEqual(
+        expect.stringContaining("Expected document failure.")
+      );
+      expect(messages).toContainEqual(
+        expect.stringContaining("failed after 1 chunk(s)")
+      );
       expect((await methodCounts(requiredLogPath))
         .get("textDocument/references") ?? 0).toBe(0);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it.each(["request", "ingestion", "activation"])(
+    "preserves partial symbol graph diagnostics on %s errors",
+    async (failure) => {
+      const directory = await mkdtemp(join(tmpdir(), "codewise-graph-error-"));
+      const databasePath = join(directory, "index.db");
+      const logPath = join(directory, "server.log");
+      const messages: string[] = [];
+      try {
+        await writeFile(join(directory, "sample.toy"), "let value = 1;\n");
+        const config: CrawlerConfig = {
+          workspaceRoot: directory,
+          server: {
+            command: process.execPath,
+            args: [
+              resolve(import.meta.dirname, "../test/fake-lsp-server.mjs"),
+              logPath
+            ],
+            cwd: directory,
+            environment: {},
+            requestResponses: {}
+          },
+          documents: [{ languageId: "toy", extensions: [".toy"] }],
+          concurrency: 1,
+          requestTimeoutMilliseconds: 5_000,
+          workspaceLoadTimeoutMilliseconds: 5_000,
+          settleMilliseconds: 0,
+          lexicalFallback: false
+        };
+        const result = crawlWorkspace(config, databasePath, {
+          onLog: (message) => messages.push(message),
+          symbolGraphProvider: {
+            name: "failing-provider",
+            languageIds: new Set(["toy"]),
+            async populateSymbolGraph(_client, documents, onChunk) {
+              if (failure === "activation") {
+                throw new Error("Extension activation failed.");
+              }
+              const chunk = {
+                symbols: [{
+                  providerKey: "value",
+                  occurrences: [{
+                    uri: documents[0]!.uri,
+                    range: {
+                      start: { line: 0, character: 4 },
+                      end: { line: 0, character: 9 }
+                    },
+                    isDefinition: true
+                  }],
+                  definitions: []
+                }],
+                processedDocumentUris: [documents[0]!.uri],
+                missingDocumentUris: [],
+                failures: [],
+                metrics: { symbolResolutionMilliseconds: 7 }
+              };
+              onChunk(chunk);
+              if (failure === "request") {
+                throw new LspRequestTimeoutError("workspace/test", 5_000);
+              }
+              onChunk(chunk);
+            }
+          }
+        });
+        await expect(result).rejects.toBeInstanceOf(CrawlError);
+        await expect(result).rejects.toMatchObject({
+          message: expect.stringContaining(
+            failure === "activation" ? "Extension activation failed."
+              : failure === "request" ? "workspace/test timed out"
+                : "UNIQUE constraint failed: occurrence_symbols"
+          ),
+          summary: {
+            requestFailures: 1,
+            symbolGraph: {
+              status: "failed",
+              populatedOccurrenceCount: failure === "activation" ? 0 : 1,
+              metrics: {
+                chunkCount: failure === "activation" ? 0
+                  : failure === "ingestion" ? 2 : 1,
+                ingestionMilliseconds: expect.any(Number),
+                cleanupMilliseconds: expect.any(Number)
+              }
+            }
+          }
+        });
+        const database = new DatabaseSync(databasePath, { readOnly: true });
+        try {
+          if (failure !== "activation") {
+            expect(database.prepare("SELECT COUNT(*) AS count FROM occurrence_symbols")
+              .get()?.["count"]).toBe(0);
+            expect(database.prepare("SELECT COUNT(*) AS count FROM symbols")
+              .get()?.["count"]).toBe(0);
+          }
+        } finally {
+          database.close();
+        }
+        expect(messages.at(-1)).toBe("[crawler] [error] Crawl failed.");
+        if (failure === "ingestion") {
+          expect(messages).toContainEqual(expect.stringContaining(
+            "[error] Symbol graph chunk 2:"
+          ));
+        }
+        expect((await methodCounts(logPath)).get("textDocument/references") ?? 0)
+          .toBe(0);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("treats an unfinished workspace progress token as advisory", async () => {
     const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-progress-"));

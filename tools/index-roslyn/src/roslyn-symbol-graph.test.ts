@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import type { SymbolGraphDocument } from "@codewise/lsp-crawler";
+import { performance } from "node:perf_hooks";
+import { describe, expect, it, vi } from "vitest";
+import {
+  LspProcessClient,
+  type SymbolGraphDocument,
+  type SymbolGraphResult
+} from "@codewise/lsp-crawler";
 import {
   chunkSymbolGraphDocuments,
   createRoslynSymbolGraphProvider
@@ -11,6 +16,81 @@ describe("createRoslynSymbolGraphProvider", () => {
 
     expect([...provider.languageIds]).toEqual(["csharp", "vb"]);
     expect(provider.languageIds.has("aspnetcorerazor")).toBe(false);
+  });
+
+  it("reports chunk progress and separates request timing from server timing", async () => {
+    const client = new LspProcessClient({
+      workspaceRoot: process.cwd(),
+      server: {
+        command: process.execPath,
+        args: [],
+        cwd: process.cwd(),
+        environment: {},
+        requestResponses: {}
+      },
+      documents: [],
+      concurrency: 8,
+      requestTimeoutMilliseconds: 5_000,
+      workspaceLoadTimeoutMilliseconds: 5_000,
+      settleMilliseconds: 0,
+      lexicalFallback: false
+    });
+    const documents = Array.from({ length: 65 }, (_, i) => createDocument(`${i}`, 1));
+    const chunks = chunkSymbolGraphDocuments(documents);
+    const results: SymbolGraphResult[] = [];
+    const logs: string[] = [];
+    try {
+      vi.spyOn(client, "waitForNotification").mockResolvedValue(true);
+      const request = vi.spyOn(client, "request").mockResolvedValueOnce({
+        workspaceMessageHandlers: ["Codewise.RoslynExtension.SymbolGraphHandler"]
+      });
+      for (const chunk of chunks) {
+        request.mockResolvedValueOnce({
+          response: JSON.stringify({
+            ProtocolVersion: 3,
+            Symbols: [],
+            ProcessedDocumentUris: chunk.map((document) => document.uri),
+            MissingDocumentUris: [],
+            Failures: [],
+            SolutionProjectCount: 1,
+            SolutionDocumentCount: 65,
+            TokenCount: 100,
+            OccurrenceCount: 0,
+            SymbolResolutionMilliseconds: 10
+          })
+        });
+      }
+      vi.spyOn(performance, "now")
+        .mockReturnValueOnce(100)
+        .mockReturnValueOnce(125)
+        .mockReturnValueOnce(200)
+        .mockReturnValueOnce(250);
+
+      await createRoslynSymbolGraphProvider("extension.dll").populateSymbolGraph(
+        client,
+        documents,
+        (chunk) => results.push(chunk),
+        (message) => logs.push(message)
+      );
+
+      expect(results.map((result) => result.metrics)).toEqual([
+        expect.objectContaining({
+          requestMilliseconds: 25,
+          symbolResolutionMilliseconds: 10
+        }),
+        expect.objectContaining({
+          requestMilliseconds: 50,
+          symbolResolutionMilliseconds: 10
+        })
+      ]);
+      expect(logs).toEqual([
+        expect.stringContaining("chunk 1/2, attempt 1/15 (64 document(s))"),
+        expect.stringContaining("chunk 2/2, attempt 1/1 (1 document(s))")
+      ]);
+      expect(request).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
 

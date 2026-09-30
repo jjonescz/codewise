@@ -1,10 +1,173 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { CrawlerDatabase } from "./database.js";
+import { DatabaseSync } from "node:sqlite";
+import { describe, expect, it, vi } from "vitest";
+import { CrawlerDatabase, type SymbolGraphAppendInput } from "./database.js";
 
 describe("CrawlerDatabase", () => {
+  it("commits graph occurrences and edges atomically and reuses occurrence statements", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-graph-append-"));
+    const path = join(directory, "index.db");
+    const database = new CrawlerDatabase(path);
+    const reader = new DatabaseSync(path, { readOnly: true });
+    try {
+      const document = database.upsertDocument({
+        uri: "file:///workspace/source.cs",
+        relativePath: "source.cs",
+        languageId: "csharp",
+        contentHash: "content",
+        positionEncoding: "utf-16"
+      });
+      const count = reader.prepare("SELECT COUNT(*) AS count FROM occurrences");
+      const visibleCounts: unknown[] = [];
+      const upsert = database.upsertOccurrence.bind(database);
+      vi.spyOn(database, "upsertOccurrence").mockImplementation((input) => {
+        const occurrence = upsert(input);
+        visibleCounts.push(count.get()?.["count"]);
+        return occurrence;
+      });
+      const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+      const symbols: SymbolGraphAppendInput[] = [{
+        providerKey: "shared",
+        displayName: "shared",
+        occurrences: [0, 1, 2].map((line) => ({
+          documentId: document.id,
+          range: {
+            start: { line, character: 0 },
+            end: { line, character: 5 }
+          },
+          discoverySource: "semantic-token",
+          isDefinition: line === 0
+        })),
+        definitions: [{
+          uri: document.uri,
+          range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 5 }
+          }
+        }]
+      }];
+      expect(database.appendSymbolGraph("test", symbols)).toBe(3);
+      expect(visibleCounts).toEqual([0, 0, 0]);
+      expect(count.get()?.["count"]).toBe(3);
+      expect(reader.prepare("SELECT COUNT(*) AS count FROM occurrence_symbols")
+        .get()?.["count"]).toBe(3);
+
+      expect(database.appendSymbolGraph("test", [{
+        ...symbols[0]!,
+        occurrences: [{
+          ...symbols[0]!.occurrences[0]!,
+          range: {
+            start: { line: 3, character: 0 },
+            end: { line: 3, character: 5 }
+          },
+          isDefinition: false
+        }],
+        definitions: []
+      }])).toBe(1);
+      expect(visibleCounts).toEqual([0, 0, 0, 3]);
+      expect(reader.prepare("SELECT COUNT(*) AS count FROM symbols").get()?.["count"])
+        .toBe(1);
+      expect(reader.prepare("SELECT COUNT(*) AS count FROM symbol_definitions")
+        .get()?.["count"]).toBe(1);
+      expect(database.hasCompleteAnswer(
+        database.listOccurrences(document.id)[3]!.id,
+        "definition"
+      )).toBe(true);
+      expect(prepare.mock.calls.filter(([sql]) => sql.includes("INSERT INTO occurrences")))
+        .toHaveLength(1);
+      expect(prepare.mock.calls.filter(
+        ([sql]) => sql.includes("SELECT id") && sql.includes("FROM occurrences")
+      )).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+      reader.close();
+      database.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["foreign-key", "duplicate-in-chunk", "duplicate-across-chunks", "empty-symbol"])(
+    "rolls back an entire graph chunk on %s failure",
+    async (failure) => {
+      const directory = await mkdtemp(join(tmpdir(), "codewise-graph-rollback-"));
+      const path = join(directory, "index.db");
+      const database = new CrawlerDatabase(path);
+      try {
+        const document = database.upsertDocument({
+          uri: "file:///workspace/source.cs",
+          relativePath: "source.cs",
+          languageId: "csharp",
+          contentHash: "content",
+          positionEncoding: "utf-16"
+        });
+        const original: SymbolGraphAppendInput = {
+          providerKey: "original",
+          displayName: "original",
+          occurrences: [{
+            documentId: document.id,
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 5 }
+            },
+            discoverySource: "semantic-token",
+            isDefinition: true
+          }],
+          definitions: []
+        };
+        database.appendSymbolGraph("test", [original]);
+        const next: SymbolGraphAppendInput = {
+          ...original,
+          providerKey: "next",
+          occurrences: [{
+            ...original.occurrences[0]!,
+            range: {
+              start: { line: 1, character: 0 },
+              end: { line: 1, character: 5 }
+            }
+          }]
+        };
+        const invalid: SymbolGraphAppendInput = {
+          ...original,
+          providerKey: "invalid",
+          occurrences: failure === "empty-symbol"
+            ? []
+            : failure === "duplicate-across-chunks"
+              ? original.occurrences
+              : failure === "duplicate-in-chunk"
+                ? next.occurrences
+                : [{
+                    ...original.occurrences[0]!,
+                    documentId: Number.MAX_SAFE_INTEGER
+                  }]
+        };
+        const before = database.statistics();
+        expect(() => database.appendSymbolGraph("test", [next, invalid]))
+          .toThrow(failure === "foreign-key"
+            ? /FOREIGN KEY/
+            : failure === "empty-symbol"
+              ? /at least one occurrence/
+              : /UNIQUE constraint failed: occurrence_symbols/);
+        expect(database.statistics()).toEqual(before);
+        const reader = new DatabaseSync(path, { readOnly: true });
+        try {
+          expect(reader.prepare("SELECT provider_key FROM symbols").all())
+            .toEqual([{ provider_key: "original" }]);
+          expect(reader.prepare("SELECT COUNT(*) AS count FROM occurrence_symbols")
+            .get()?.["count"]).toBe(1);
+        } finally {
+          reader.close();
+        }
+        expect(database.appendSymbolGraph("test", [next])).toBe(1);
+        expect(database.statistics().occurrenceCount).toBe(2);
+      } finally {
+        database.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("invalidates workspace answers when a document changes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "codewise-index-change-"));
     try {

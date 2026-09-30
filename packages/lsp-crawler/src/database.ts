@@ -66,6 +66,15 @@ export interface SymbolGraphOccurrenceInput {
   readonly isDefinition: boolean;
 }
 
+export interface SymbolGraphAppendInput {
+  readonly providerKey: string;
+  readonly displayName?: string;
+  readonly occurrences: readonly (OccurrenceInput & {
+    readonly isDefinition: boolean;
+  })[];
+  readonly definitions: readonly Location[];
+}
+
 interface RowWithId {
   readonly id: number;
 }
@@ -102,6 +111,8 @@ interface CurrentDocumentRow {
 
 export class CrawlerDatabase {
   readonly #database: DatabaseSync;
+  #insertOccurrence: StatementSync | undefined;
+  #selectOccurrence: StatementSync | undefined;
 
   public constructor(path: string) {
     const absolutePath = resolve(path);
@@ -215,7 +226,7 @@ export class CrawlerDatabase {
       input.range.start.character
     );
     const endKey = positionKey(input.range.end.line, input.range.end.character);
-    this.#database.prepare(`
+    const insert = this.#insertOccurrence ??= this.#database.prepare(`
       INSERT INTO occurrences (
         document_id,
         start_line,
@@ -247,7 +258,8 @@ export class CrawlerDatabase {
           excluded.semantic_modifiers,
           occurrences.semantic_modifiers
         )
-    `).run(
+    `);
+    insert.run(
       input.documentId,
       input.range.start.line,
       input.range.start.character,
@@ -260,7 +272,7 @@ export class CrawlerDatabase {
       input.semanticModifiers ?? null
     );
     const row = requiredRow<RowWithId>(
-      this.#database.prepare(`
+      this.#selectOccurrence ??= this.#database.prepare(`
         SELECT id
         FROM occurrences
         WHERE document_id = ?
@@ -366,93 +378,130 @@ export class CrawlerDatabase {
       }
       this.#deleteGraphDerivedAnswers(occurrenceIds);
       this.#deleteOrphanedSymbols();
-      const insertSymbol = this.#database.prepare(`
-        INSERT INTO symbols (provider, provider_key, display_name)
-        VALUES (?, ?, ?)
-        ON CONFLICT (provider, provider_key) DO UPDATE SET
-          display_name = excluded.display_name
-      `);
-      const selectSymbol = this.#database.prepare(`
-        SELECT id FROM symbols WHERE provider = ? AND provider_key = ?
-      `);
-      const insertEdge = this.#database.prepare(`
-        INSERT INTO occurrence_symbols (
-          occurrence_id, symbol_id, is_definition
-        )
-        VALUES (?, ?, ?)
-        ON CONFLICT (occurrence_id) DO UPDATE SET
-          symbol_id = excluded.symbol_id,
-          is_definition = excluded.is_definition
-      `);
-      const insertDefinition = this.#database.prepare(`
-        INSERT INTO symbol_definitions (
-          symbol_id,
-          ordinal,
-          uri,
-          start_line,
-          start_character,
-          end_line,
-          end_character
-        )
-        SELECT
-          ?,
-          COALESCE((
-            SELECT MAX(ordinal) + 1 FROM symbol_definitions WHERE symbol_id = ?
-          ), 0),
-          ?, ?, ?, ?, ?
-        WHERE NOT EXISTS (
-          SELECT 1 FROM symbol_definitions
-          WHERE symbol_id = ?
-            AND uri = ?
-            AND start_line = ?
-            AND start_character = ?
-            AND end_line = ?
-            AND end_character = ?
-        )
-      `);
-      for (const symbol of symbols) {
-        if (symbol.occurrences.length === 0) {
-          throw new Error("Symbol graph entries require at least one occurrence.");
-        }
-        insertSymbol.run(
-          provider,
-          symbol.providerKey,
-          symbol.displayName ?? null
-        );
-        const symbolId = requiredRow<RowWithId>(
-          selectSymbol,
-          provider,
-          symbol.providerKey
-        ).id;
-        for (const occurrence of symbol.occurrences) {
-          insertEdge.run(
-            occurrence.occurrenceId,
-            symbolId,
-            occurrence.isDefinition ? 1 : 0
-          );
-        }
-        // Another language may see only metadata for a symbol defined in source.
-        for (const definition of normalizeLocations(symbol.definitions)) {
-          const locationValues = [
-            definition.uri,
-            definition.range.start.line,
-            definition.range.start.character,
-            definition.range.end.line,
-            definition.range.end.character
-          ];
-          insertDefinition.run(
-            symbolId,
-            symbolId,
-            ...locationValues,
-            symbolId,
-            ...locationValues
-          );
-        }
-      }
+      this.#writeSymbolGraph(provider, symbols, true);
       this.#database.exec("COMMIT");
     } catch (error) {
       this.#database.exec("ROLLBACK");
       throw error;
+    }
+  }
+
+  public appendSymbolGraph(
+    provider: string,
+    symbols: readonly SymbolGraphAppendInput[]
+  ): number {
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      this.#database.exec(createSymbolGraphSchemaSql);
+      let occurrenceCount = 0;
+      const persisted = symbols.map((symbol): SymbolGraphInput => ({
+        ...symbol,
+        occurrences: symbol.occurrences.map((occurrence) => {
+          const saved = this.upsertOccurrence(occurrence);
+          occurrenceCount++;
+          return {
+            occurrenceId: saved.id,
+            isDefinition: occurrence.isDefinition
+          };
+        })
+      }));
+      // Fresh crawl chunks only add edges; duplicates must fail, not overwrite.
+      this.#writeSymbolGraph(provider, persisted, false);
+      this.#database.exec("COMMIT");
+      return occurrenceCount;
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  #writeSymbolGraph(
+    provider: string,
+    symbols: readonly SymbolGraphInput[],
+    replaceOccurrences: boolean
+  ): void {
+    const insertSymbol = this.#database.prepare(`
+      INSERT INTO symbols (provider, provider_key, display_name)
+      VALUES (?, ?, ?)
+      ON CONFLICT (provider, provider_key) DO UPDATE SET
+        display_name = excluded.display_name
+    `);
+    const selectSymbol = this.#database.prepare(`
+      SELECT id FROM symbols WHERE provider = ? AND provider_key = ?
+    `);
+    const insertEdge = this.#database.prepare(`
+      INSERT INTO occurrence_symbols (
+        occurrence_id, symbol_id, is_definition
+      )
+      VALUES (?, ?, ?)
+      ${replaceOccurrences ? `ON CONFLICT (occurrence_id) DO UPDATE SET
+        symbol_id = excluded.symbol_id,
+        is_definition = excluded.is_definition` : ""}
+    `);
+    const insertDefinition = this.#database.prepare(`
+      INSERT INTO symbol_definitions (
+        symbol_id,
+        ordinal,
+        uri,
+        start_line,
+        start_character,
+        end_line,
+        end_character
+      )
+      SELECT
+        ?,
+        COALESCE((
+          SELECT MAX(ordinal) + 1 FROM symbol_definitions WHERE symbol_id = ?
+        ), 0),
+        ?, ?, ?, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM symbol_definitions
+        WHERE symbol_id = ?
+          AND uri = ?
+          AND start_line = ?
+          AND start_character = ?
+          AND end_line = ?
+          AND end_character = ?
+      )
+    `);
+    for (const symbol of symbols) {
+      if (symbol.occurrences.length === 0) {
+        throw new Error("Symbol graph entries require at least one occurrence.");
+      }
+      insertSymbol.run(
+        provider,
+        symbol.providerKey,
+        symbol.displayName ?? null
+      );
+      const symbolId = requiredRow<RowWithId>(
+        selectSymbol,
+        provider,
+        symbol.providerKey
+      ).id;
+      for (const occurrence of symbol.occurrences) {
+        insertEdge.run(
+          occurrence.occurrenceId,
+          symbolId,
+          occurrence.isDefinition ? 1 : 0
+        );
+      }
+      // Another language may see only metadata for a symbol defined in source.
+      for (const definition of normalizeLocations(symbol.definitions)) {
+        const locationValues = [
+          definition.uri,
+          definition.range.start.line,
+          definition.range.start.character,
+          definition.range.end.line,
+          definition.range.end.character
+        ];
+        insertDefinition.run(
+          symbolId,
+          symbolId,
+          ...locationValues,
+          symbolId,
+          ...locationValues
+        );
+      }
     }
   }
 

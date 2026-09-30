@@ -285,13 +285,7 @@ public sealed class SymbolGraphHandler
         var identity = new StringBuilder()
             .Append(symbol.ContainingAssembly?.Identity.ToString() ?? "")
             .Append('\0');
-        var documentationId = symbol.GetDocumentationCommentId();
-        if (documentationId is not null)
-        {
-            // Source and metadata views must share an ID across C# and VB.
-            identity.Append(documentationId);
-        }
-        else if (symbol is IParameterSymbol parameter)
+        if (symbol is IParameterSymbol { ContainingSymbol: not null } parameter)
         {
             identity.Append("parameter\0")
                 .Append(CreateProviderKey(
@@ -300,7 +294,7 @@ public sealed class SymbolGraphHandler
                 .Append('\0')
                 .Append(parameter.Ordinal);
         }
-        else if (symbol is ITypeParameterSymbol typeParameter)
+        else if (symbol is ITypeParameterSymbol { ContainingSymbol: not null } typeParameter)
         {
             identity.Append("type-parameter\0")
                 .Append(CreateProviderKey(
@@ -309,8 +303,17 @@ public sealed class SymbolGraphHandler
                 .Append('\0')
                 .Append(typeParameter.Ordinal);
         }
+        else if (
+            symbol is not (IParameterSymbol or ITypeParameterSymbol)
+            && symbol.GetDocumentationCommentId() is { } documentationId)
+        {
+            // Source and metadata views must share an ID across C# and VB.
+            identity.Append(documentationId);
+        }
         else
         {
+            // VB cref type parameters have no owner and cannot produce documentation
+            // IDs. Their source locations keep unrelated cref declarations distinct.
             identity
                 .Append(symbol.Kind)
                 .Append('\0')

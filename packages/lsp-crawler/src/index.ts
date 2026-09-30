@@ -34,6 +34,7 @@ export {
   type OccurrenceInput,
   type OccurrenceRecord,
   type SharedLocationAnswerInput,
+  type SymbolGraphAppendInput,
   type SymbolGraphInput,
   type SymbolGraphOccurrenceInput
 } from "./database.js";

@@ -12,7 +12,8 @@ import {
 import type { CrawlerConfig } from "./config.js";
 import {
   CrawlerDatabase,
-  type LocationAnswerKind
+  type LocationAnswerKind,
+  type SymbolGraphAppendInput
 } from "./database.js";
 import {
   isDocumentSymbol,
@@ -66,12 +67,10 @@ export interface CrawlSummary {
 export class CrawlError extends AggregateError {
   public constructor(
     errors: readonly Error[],
-    public readonly summary: CrawlSummary
+    public readonly summary: CrawlSummary,
+    message = `The LSP crawl completed with ${errors.length} failure(s).`
   ) {
-    super(
-      errors,
-      `The LSP crawl completed with ${errors.length} failure(s).`
-    );
+    super(errors, message, { cause: errors[0] });
     this.name = "CrawlError";
   }
 }
@@ -120,19 +119,31 @@ export interface SymbolGraphProvider {
   populateSymbolGraph(
     client: LspProcessClient,
     documents: readonly SymbolGraphDocument[],
-    onChunk: (result: SymbolGraphResult) => void
+    onChunk: (result: SymbolGraphResult) => void,
+    onLog?: (message: string) => void
   ): Promise<void>;
 }
 
 export interface SymbolGraphSummary {
   readonly provider: string;
-  readonly status: "used" | "fallback";
+  readonly status: "used" | "fallback" | "failed";
   readonly occurrenceCount: number;
   readonly populatedOccurrenceCount: number;
   readonly unresolvedOccurrenceCount: number;
   readonly symbolCount: number;
   readonly elapsedMilliseconds: number;
   readonly metrics?: Readonly<Record<string, number>>;
+}
+
+class SymbolGraphError extends Error {
+  public constructor(
+    message: string,
+    public readonly summary: SymbolGraphSummary,
+    cause: unknown
+  ) {
+    super(message, { cause });
+    this.name = "SymbolGraphError";
+  }
 }
 
 interface Candidate {
@@ -301,50 +312,62 @@ export async function crawlWorkspace(
       )
     ));
     const symbolGraphStartedAt = performance.now();
-    const symbolGraph = await populateSymbolGraph(
-      client,
-      database,
-      providerWork,
-      provider,
-      onLog
-    );
-    const symbolGraphMilliseconds =
-      performance.now() - symbolGraphStartedAt;
+    let symbolGraph: SymbolGraphSummary | undefined;
+    let symbolGraphMilliseconds: number;
+    try {
+      symbolGraph = await populateSymbolGraph(
+        client,
+        database,
+        providerWork,
+        provider,
+        onLog
+      );
+      symbolGraphMilliseconds = performance.now() - symbolGraphStartedAt;
+    } catch (error) {
+      symbolGraphMilliseconds = performance.now() - symbolGraphStartedAt;
+      if (error instanceof SymbolGraphError) {
+        symbolGraph = error.summary;
+        failures.push(error);
+        throw new CrawlError(failures, createSummary(), error.message);
+      }
+      throw error;
+    }
     if (provider !== undefined && symbolGraph?.status === "used") {
       await processWork(providerWork, false);
       await processWork(standardWork, true);
     } else {
       await processWork(prioritizedWork, true);
     }
-    const documentCrawlMilliseconds =
-      performance.now() - documentCrawlStartedAt;
-
     database.setMetadata("crawl_finished_at", new Date().toISOString());
-    const summary: CrawlSummary = {
-      documentCount: documents.length,
-      documentsCompleted,
-      requestFailures: failures.length,
-      recoveredRequestFailures: counters.recoveredRequestFailures,
-      requestStatistics: client.requestStatistics(),
-      ...(symbolGraph === undefined ? {} : { symbolGraph }),
-      database: database.statistics(),
-      timings: {
-        documentDiscoveryMilliseconds,
-        serverInitializationMilliseconds,
-        indexPreparationMilliseconds,
-        workspaceLoadWaitMilliseconds,
-        candidateDiscoveryMilliseconds,
-        symbolGraphMilliseconds,
-        occurrenceProbeMilliseconds,
-        documentCrawlMilliseconds,
-        totalMilliseconds: performance.now() - startedAt
-      }
-    };
+    const summary = createSummary();
     if (failures.length > 0) {
       throw new CrawlError(failures, summary);
     }
     completedSuccessfully = true;
     return summary;
+
+    function createSummary(): CrawlSummary {
+      return {
+        documentCount: documents.length,
+        documentsCompleted,
+        requestFailures: failures.length,
+        recoveredRequestFailures: counters.recoveredRequestFailures,
+        requestStatistics: client.requestStatistics(),
+        ...(symbolGraph === undefined ? {} : { symbolGraph }),
+        database: database.statistics(),
+        timings: {
+          documentDiscoveryMilliseconds,
+          serverInitializationMilliseconds,
+          indexPreparationMilliseconds,
+          workspaceLoadWaitMilliseconds,
+          candidateDiscoveryMilliseconds,
+          symbolGraphMilliseconds,
+          occurrenceProbeMilliseconds,
+          documentCrawlMilliseconds: performance.now() - documentCrawlStartedAt,
+          totalMilliseconds: performance.now() - startedAt
+        }
+      };
+    }
 
     async function processWork(
       documentWorkItems: readonly DocumentWork[],
@@ -449,6 +472,7 @@ async function populateSymbolGraph(
   if (provider === undefined) {
     return undefined;
   }
+  const providerName = provider.name;
   const documents = work.flatMap((documentWork): SymbolGraphDocument[] => {
     const prepared = documentWork.prepared;
     if (
@@ -471,83 +495,22 @@ async function populateSymbolGraph(
     ))
   );
   const startedAt = performance.now();
+  const providerKeys = new Set<string>();
+  let populatedOccurrenceCount = 0;
+  let processedDocumentCount = 0;
+  let missingDocumentCount = 0;
+  let failedDocumentCount = 0;
+  let chunkCount = 0;
+  let ingestionMilliseconds = 0;
+  let cleanupMilliseconds = 0;
+  const metrics: Record<string, number> = {};
+  onLog(
+    `[crawler] [info] Symbol graph provider ${provider.name} started for `
+    + `${documents.length} document(s).`
+  );
   try {
-    const providerKeys = new Set<string>();
-    const savedOccurrenceIds = new Set<number>();
-    let populatedOccurrenceCount = 0;
-    let processedDocumentCount = 0;
-    let missingDocumentCount = 0;
-    let failedDocumentCount = 0;
-    const metrics: Record<string, number> = {};
     await provider.populateSymbolGraph(client, documents, (result) => {
-      const chunkKeys = new Set<string>();
-      const chunkOccurrenceIds: number[] = [];
-      const persistedSymbols: Array<{
-        readonly providerKey: string;
-        readonly displayName?: string;
-        readonly occurrences: Array<{
-          readonly occurrenceId: number;
-          readonly isDefinition: boolean;
-        }>;
-        readonly definitions: readonly Location[];
-      }> = [];
-      for (const symbol of result.symbols) {
-        if (
-          symbol.providerKey.length === 0
-          || chunkKeys.has(symbol.providerKey)
-          || symbol.occurrences.length === 0
-        ) {
-          throw new Error(
-            `Symbol graph provider ${provider.name} returned an invalid symbol.`
-          );
-        }
-        chunkKeys.add(symbol.providerKey);
-        providerKeys.add(symbol.providerKey);
-        const persistedOccurrences: Array<{
-          readonly occurrenceId: number;
-          readonly isDefinition: boolean;
-        }> = [];
-        for (const edge of symbol.occurrences) {
-          const prepared = documentByUri.get(edge.uri);
-          if (prepared === undefined) {
-            throw new Error(
-              `Symbol graph provider ${provider.name} returned an occurrence `
-              + `for unknown document ${edge.uri}.`
-            );
-          }
-          const occurrence = database.upsertOccurrence({
-            documentId: prepared.recordId,
-            range: edge.range,
-            discoverySource: "semantic-token"
-          });
-          if (savedOccurrenceIds.has(occurrence.id)) {
-            throw new Error(
-              `Symbol graph provider ${provider.name} returned occurrence `
-              + `${occurrence.id} in more than one symbol.`
-            );
-          }
-          savedOccurrenceIds.add(occurrence.id);
-          chunkOccurrenceIds.push(occurrence.id);
-          persistedOccurrences.push({
-            occurrenceId: occurrence.id,
-            isDefinition: edge.isDefinition
-          });
-          populatedOccurrenceCount++;
-        }
-        persistedSymbols.push({
-          providerKey: symbol.providerKey,
-          ...(symbol.displayName === undefined
-            ? {}
-            : { displayName: symbol.displayName }),
-          occurrences: persistedOccurrences,
-          definitions: symbol.definitions
-        });
-      }
-      database.saveSymbolGraph(
-        provider.name,
-        chunkOccurrenceIds,
-        persistedSymbols
-      );
+      chunkCount++;
       processedDocumentCount += result.processedDocumentUris.length;
       missingDocumentCount += result.missingDocumentUris.length;
       failedDocumentCount += result.failures.length;
@@ -563,26 +526,75 @@ async function populateSymbolGraph(
           ? Math.max(metrics[name] ?? 0, value)
           : (metrics[name] ?? 0) + value;
       }
-    });
+      const ingestionStartedAt = performance.now();
+      let chunkOccurrenceCount = 0;
+      let committed = false;
+      try {
+        const chunkKeys = new Set<string>();
+        const symbols = result.symbols.map((symbol): SymbolGraphAppendInput => {
+          if (
+            symbol.providerKey.length === 0
+            || chunkKeys.has(symbol.providerKey)
+            || symbol.occurrences.length === 0
+          ) {
+            throw new Error(
+              `Symbol graph provider ${provider.name} returned an invalid symbol.`
+            );
+          }
+          chunkKeys.add(symbol.providerKey);
+          return {
+            ...symbol,
+            occurrences: symbol.occurrences.map((edge) => {
+              const prepared = documentByUri.get(edge.uri);
+              if (prepared === undefined) {
+                throw new Error(
+                  `Symbol graph provider ${provider.name} returned an occurrence `
+                  + `for unknown document ${edge.uri}.`
+                );
+              }
+              return {
+                documentId: prepared.recordId,
+                range: edge.range,
+                discoverySource: "semantic-token",
+                isDefinition: edge.isDefinition
+              };
+            })
+          };
+        });
+        chunkOccurrenceCount = database.appendSymbolGraph(provider.name, symbols);
+        populatedOccurrenceCount += chunkOccurrenceCount;
+        for (const key of chunkKeys) {
+          providerKeys.add(key);
+        }
+        committed = true;
+      } finally {
+        const duration = performance.now() - ingestionStartedAt;
+        ingestionMilliseconds += duration;
+        const formatMetric = (name: string): string => (
+          result.metrics?.[name] === undefined
+            ? "unavailable"
+            : `${Math.round(result.metrics[name])}ms`
+        );
+        onLog(
+          `[crawler] [${committed ? "info" : "error"}] Symbol graph chunk `
+          + `${chunkCount}: ${result.processedDocumentUris.length} processed, `
+          + `${result.missingDocumentUris.length} missing, `
+          + `${result.failures.length} failed document(s); `
+          + `${chunkOccurrenceCount} occurrence(s) committed; `
+          + `request ${formatMetric("requestMilliseconds")}, `
+          + `server ${formatMetric("symbolResolutionMilliseconds")}, `
+          + `ingestion ${Math.round(duration)}ms; `
+          + `${processedDocumentCount}/${documents.length} documents processed.`
+        );
+      }
+    }, onLog);
     if (failedDocumentCount > 0) {
       throw new Error(
         `Symbol graph provider ${provider.name} failed to process `
         + `${failedDocumentCount} document(s).`
       );
     }
-    metrics["processedDocumentCount"] = processedDocumentCount;
-    metrics["missingDocumentCount"] = missingDocumentCount;
-    metrics["failedDocumentCount"] = failedDocumentCount;
-    const summary: SymbolGraphSummary = {
-      provider: provider.name,
-      status: "used",
-      occurrenceCount: populatedOccurrenceCount,
-      populatedOccurrenceCount,
-      unresolvedOccurrenceCount: 0,
-      symbolCount: providerKeys.size,
-      elapsedMilliseconds: performance.now() - startedAt,
-      ...(Object.keys(metrics).length === 0 ? {} : { metrics })
-    };
+    const summary = createSummary("used");
     onLog(
       `[crawler] [info] Symbol graph provider ${provider.name} populated `
       + `${populatedOccurrenceCount} occurrence(s) from `
@@ -592,15 +604,54 @@ async function populateSymbolGraph(
     );
     return summary;
   } catch (error) {
-    database.clearSymbolGraphForDocuments(
-      [...documentByUri.values()].map((prepared) => prepared.recordId)
+    const cleanupStartedAt = performance.now();
+    let cause = error;
+    try {
+      database.clearSymbolGraphForDocuments(
+        [...documentByUri.values()].map((prepared) => prepared.recordId)
+      );
+    } catch (cleanupError) {
+      onLog(`[crawler] [error] Symbol graph cleanup failed: ${String(cleanupError)}`);
+      cause = new AggregateError([error, cleanupError], "Symbol graph cleanup failed.");
+    }
+    cleanupMilliseconds = performance.now() - cleanupStartedAt;
+    const summary = createSummary("failed");
+    onLog(
+      `[crawler] [error] Symbol graph provider ${provider.name} failed after `
+      + `${chunkCount} chunk(s), ${processedDocumentCount} processed document(s), `
+      + `${populatedOccurrenceCount} occurrence(s) ingested before cleanup; `
+      + `ingestion ${Math.round(ingestionMilliseconds)}ms, `
+      + `cleanup ${Math.round(cleanupMilliseconds)}ms, `
+      + `total ${Math.round(summary.elapsedMilliseconds)}ms.`
     );
-    throw new Error(
+    throw new SymbolGraphError(
       `Required symbol graph provider ${provider.name} failed: ${
         error instanceof Error ? error.message : String(error)
       }`,
-      { cause: error }
+      summary,
+      cause
     );
+  }
+
+  function createSummary(status: "used" | "failed"): SymbolGraphSummary {
+    return {
+      provider: providerName,
+      status,
+      occurrenceCount: populatedOccurrenceCount,
+      populatedOccurrenceCount,
+      unresolvedOccurrenceCount: 0,
+      symbolCount: providerKeys.size,
+      elapsedMilliseconds: performance.now() - startedAt,
+      metrics: {
+        ...metrics,
+        processedDocumentCount,
+        missingDocumentCount,
+        failedDocumentCount,
+        chunkCount,
+        ingestionMilliseconds,
+        cleanupMilliseconds
+      }
+    };
   }
 }
 

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
-import { describe, expect, it, onTestFailed } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFailed } from "vitest";
 import { CodeIndex } from "@codewise/index-core";
 
 const execute = promisify(execFile);
@@ -27,6 +27,12 @@ public static class CSharpApi
 {
     public static int Increment(int amount) => amount + 1;
     public static int Increment(string amount) => amount.Length;
+    public static T Echo<T>(T item) => item;
+}
+
+public sealed class CSharpBox<T>
+{
+    public T BoxEcho(T item) => item;
 }
 `,
   "VisualBasic/VisualBasic.vbproj": `<Project Sdk="Microsoft.NET.Sdk">
@@ -48,6 +54,32 @@ Namespace Mixed
             Dim nextValue = CSharpApi.Increment(amount:=value)
             Return nextValue + NEXTVALUE
         End Function
+
+        Public Shared Function Echo(Of T)(item As T) As T
+            Return CSharpApi.Echo(Of T)(item:=item)
+        End Function
+
+        Public Shared Function UseBox(box As CSharpBox(Of Integer)) As Integer
+            Return box.BoxEcho(item:=4)
+        End Function
+
+        ''' <summary>First <see cref="VbApi.Echo(Of T)(T)"/>.</summary>
+        Public Shared Sub DocumentFirst()
+        End Sub
+
+        ''' <summary>Second <see cref="VbApi.Echo(Of T)(T)"/>.</summary>
+        Public Shared Sub DocumentSecond()
+        End Sub
+
+        ''' <summary>CSharp <see cref="CSharpApi.Echo(Of T)(T)"/>.</summary>
+        Public Shared Sub DocumentCSharp()
+        End Sub
+    End Class
+
+    Public Class VbBox(Of T)
+        Public Function BoxEcho(item As T) As T
+            Return item
+        End Function
     End Class
 End Namespace
 #End If
@@ -66,143 +98,240 @@ End Namespace
 public static class Caller
 {
     public static int Run() => VbApi.Compute(value: 1);
+    public static int RunGeneric() => VbApi.Echo<int>(item: 2);
+    public static int RunBox(VbBox<int> box) => box.BoxEcho(item: 3);
 }
 `
 };
 
 describe("Roslyn mixed-language symbol graph", () => {
-  it("indexes VB locals and connects C#/VB definitions and references", async () => {
+  let directory;
+  let index;
+  let log;
+  let manifest;
+  const vbPath = "VisualBasic/VbApi.vb";
+  const csharpPath = "CSharpApi/CSharpApi.cs";
+  const callerPath = "CSharpCaller/Caller.cs";
+
+  beforeAll(async () => {
     // The CLI records Git HEAD, so keep the disposable workspace in the checkout.
-    const directory = await mkdtemp(join(repositoryRoot, ".codewise-mixed-test-"));
-    try {
-      const { stdout: sdkVersion } = await execute("dotnet", ["--version"], {
-        cwd: repositoryRoot,
-        windowsHide: true
-      });
-      await writeFile(join(directory, "global.json"), JSON.stringify({
-        sdk: { version: sdkVersion.trim() }
-      }));
-      for (const [path, contents] of Object.entries(files)) {
-        const absolutePath = resolve(directory, ...path.split("/"));
-        await mkdir(dirname(absolutePath), { recursive: true });
-        await writeFile(absolutePath, contents);
-      }
-      await execute("dotnet", ["build", "Mixed.slnx", "--nologo"], {
-        cwd: directory,
-        windowsHide: true,
-        timeout: 60_000
-      });
-      const databasePath = join(directory, "artifacts", "index.db");
-      await execute(process.execPath, [
-        join(repositoryRoot, "tools", "index-roslyn", "dist", "cli.js"),
-        "--workspace-root", directory,
-        "--database", databasePath,
-        "--roslyn-symbol-graph"
-      ], {
-        cwd: repositoryRoot,
-        windowsHide: true,
-        timeout: 90_000,
-        maxBuffer: 4 * 1024 * 1024
-      });
-
-      const log = await readFile(join(directory, "artifacts", "lsp-crawler.log"), "utf8");
-      onTestFailed(() => console.error(log));
-      const manifest = JSON.parse(await readFile(
-        join(directory, "artifacts", "manifest.json"),
-        "utf8"
-      ));
-      expect(manifest.statistics.documentCount).toBe(3);
-      expect(manifest.recoveredRequestFailures).toBe(0);
-      expect(manifest.symbolGraph).toMatchObject({
-        status: "used",
-        metrics: {
-          processedDocumentCount: 3,
-          missingDocumentCount: 0,
-          failedDocumentCount: 0
-        }
-      });
-      expect(manifest.requestStatistics.filter(
-        (entry) => entry.method.startsWith("textDocument/")
-      )).toEqual([]);
-      expect(log).not.toContain("Syntax tree is required");
-
-      const database = new DatabaseSync(databasePath, { readOnly: true });
-      const index = new CodeIndex({
-        all: (sql, parameters = []) => database.prepare(sql).all(...parameters),
-        close: () => database.close()
-      });
-      try {
-        const vbPath = "VisualBasic/VbApi.vb";
-        const csharpPath = "CSharpApi/CSharpApi.cs";
-        const callerPath = "CSharpCaller/Caller.cs";
-        const csharpDefinition = positionOf(csharpPath, "Increment(int", "Increment");
-        const vbDefinition = positionOf(vbPath, "Function Compute", "Compute");
-
-        expect(index.definition(
-          vbPath,
-          positionOf(vbPath, "CSharpApi.Increment", "Increment")
-        )).toEqual([expect.objectContaining({
-          relativePath: csharpPath,
-          range: expect.objectContaining({ start: csharpDefinition })
-        })]);
-        expect(index.references(csharpPath, csharpDefinition, false))
-          .toEqual([expect.objectContaining({ relativePath: vbPath })]);
-        expect(index.definition(
-          callerPath,
-          positionOf(callerPath, "VbApi.Compute", "Compute")
-        )).toEqual([expect.objectContaining({
-          relativePath: vbPath,
-          range: expect.objectContaining({ start: vbDefinition })
-        })]);
-        expect(index.references(vbPath, vbDefinition, false))
-          .toEqual([expect.objectContaining({ relativePath: callerPath })]);
-        expect(index.definition(
-          vbPath,
-          positionOf(vbPath, "amount:=value", "amount")
-        )).toEqual([expect.objectContaining({
-          relativePath: csharpPath,
-          range: expect.objectContaining({
-            start: positionOf(csharpPath, "Increment(int", "amount")
-          })
-        })]);
-        expect(index.definition(
-          callerPath,
-          positionOf(callerPath, "Compute(value:", "value")
-        )).toEqual([expect.objectContaining({
-          relativePath: vbPath,
-          range: expect.objectContaining({
-            start: positionOf(vbPath, "Function Compute", "value")
-          })
-        })]);
-        expect(index.references(
-          vbPath,
-          positionOf(vbPath, "Dim nextValue", "nextValue"),
-          false
-        )).toHaveLength(2);
-        expect(index.definition(
-          vbPath,
-          positionOf(vbPath, "Return nextValue", "NEXTVALUE")
-        )).toEqual([expect.objectContaining({
-          relativePath: vbPath,
-          range: expect.objectContaining({
-            start: positionOf(vbPath, "Dim nextValue", "nextValue")
-          })
-        })]);
-        expect(index.hover(vbPath, vbDefinition)).toBeDefined();
-      } finally {
-        index.close();
-      }
-    } finally {
-      await rm(directory, { recursive: true, force: true });
+    directory = await mkdtemp(join(repositoryRoot, ".codewise-mixed-test-"));
+    const { stdout: sdkVersion } = await execute("dotnet", ["--version"], {
+      cwd: repositoryRoot,
+      windowsHide: true
+    });
+    await writeFile(join(directory, "global.json"), JSON.stringify({
+      sdk: { version: sdkVersion.trim() }
+    }));
+    for (const [path, contents] of Object.entries(files)) {
+      const absolutePath = resolve(directory, ...path.split("/"));
+      await mkdir(dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, contents);
     }
+    await execute("dotnet", ["build", "Mixed.slnx", "--nologo", "-bl:{}"], {
+      cwd: directory,
+      windowsHide: true,
+      timeout: 60_000
+    });
+    const databasePath = join(directory, "artifacts", "index.db");
+    await execute(process.execPath, [
+      join(repositoryRoot, "tools", "index-roslyn", "dist", "cli.js"),
+      "--workspace-root", directory,
+      "--database", databasePath,
+      "--roslyn-symbol-graph"
+    ], {
+      cwd: repositoryRoot,
+      windowsHide: true,
+      timeout: 90_000,
+      maxBuffer: 4 * 1024 * 1024
+    });
+
+    log = await readFile(join(directory, "artifacts", "lsp-crawler.log"), "utf8");
+    manifest = JSON.parse(await readFile(
+      join(directory, "artifacts", "manifest.json"),
+      "utf8"
+    ));
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    index = new CodeIndex({
+      all: (sql, parameters = []) => database.prepare(sql).all(...parameters),
+      close: () => database.close()
+    });
+  }, 120_000);
+
+  beforeEach(() => {
+    onTestFailed(() => console.error(log));
+  });
+
+  afterAll(async () => {
+    try {
+      index?.close();
+    } finally {
+      if (directory !== undefined) {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("indexes VB locals and connects C#/VB definitions and references", () => {
+    expect(manifest.statistics.documentCount).toBe(3);
+    expect(manifest.recoveredRequestFailures).toBe(0);
+    expect(manifest.symbolGraph).toMatchObject({
+      status: "used",
+      metrics: {
+        processedDocumentCount: 3,
+        missingDocumentCount: 0,
+        failedDocumentCount: 0
+      }
+    });
+    expect(manifest.requestStatistics.filter(
+      (entry) => entry.method.startsWith("textDocument/")
+    )).toEqual([]);
+    expect(log).not.toContain("Syntax tree is required");
+
+    expectSymbol(index, locationOf(csharpPath, "Increment(int", "Increment"), [
+      locationOf(vbPath, "CSharpApi.Increment", "Increment")
+    ]);
+    expectSymbol(index, locationOf(vbPath, "Function Compute", "Compute"), [
+      locationOf(callerPath, "VbApi.Compute", "Compute")
+    ]);
+    expectSymbol(index, locationOf(csharpPath, "Increment(int", "amount"), [
+      locationOf(csharpPath, "Increment(int", "amount", 1),
+      locationOf(vbPath, "amount:=value", "amount")
+    ]);
+    expectSymbol(index, locationOf(vbPath, "Function Compute", "value"), [
+      locationOf(vbPath, "amount:=value", "value"),
+      locationOf(callerPath, "Compute(value:", "value")
+    ]);
+    expectSymbol(index, locationOf(vbPath, "Dim nextValue", "nextValue"), [
+      locationOf(vbPath, "Return nextValue", "nextValue"),
+      locationOf(vbPath, "Return nextValue", "NEXTVALUE")
+    ]);
+    expect(index.hover(vbPath, positionOf(vbPath, "Function Compute", "Compute")))
+      .toBeDefined();
+  });
+
+  it("keeps generic type, method, and value parameters scoped to their owners", () => {
+    for (const [definition, references] of [
+      [
+        locationOf(csharpPath, "CSharpBox<T>", "T"),
+        [
+          locationOf(csharpPath, "public T BoxEcho", "T"),
+          locationOf(csharpPath, "public T BoxEcho", "T", 1)
+        ]
+      ],
+      [
+        locationOf(csharpPath, "static T Echo<T>", "T", 1),
+        [
+          locationOf(csharpPath, "static T Echo<T>", "T"),
+          locationOf(csharpPath, "static T Echo<T>", "T", 2)
+        ]
+      ],
+      [
+        locationOf(vbPath, "Class VbBox(Of T)", "T"),
+        [
+          locationOf(vbPath, "Function BoxEcho", "T"),
+          locationOf(vbPath, "Function BoxEcho", "T", 1)
+        ]
+      ],
+      [
+        locationOf(vbPath, "Function Echo(Of T)", "T"),
+        [
+          locationOf(vbPath, "Function Echo(Of T)", "T", 1),
+          locationOf(vbPath, "Function Echo(Of T)", "T", 2),
+          locationOf(vbPath, "Return CSharpApi.Echo", "T")
+        ]
+      ],
+      [
+        locationOf(csharpPath, "static T Echo<T>", "item"),
+        [
+          locationOf(csharpPath, "static T Echo<T>", "item", 1),
+          locationOf(vbPath, "Return CSharpApi.Echo", "item")
+        ]
+      ],
+      [
+        locationOf(vbPath, "Function Echo(Of T)", "item"),
+        [
+          locationOf(vbPath, "Return CSharpApi.Echo", "item", 1),
+          locationOf(callerPath, "RunGeneric()", "item")
+        ]
+      ],
+      [
+        locationOf(csharpPath, "public T BoxEcho", "item"),
+        [
+          locationOf(csharpPath, "public T BoxEcho", "item", 1),
+          locationOf(vbPath, "Return box.BoxEcho", "item")
+        ]
+      ],
+      [
+        locationOf(vbPath, "Function BoxEcho", "item"),
+        [
+          locationOf(vbPath, "Return item", "item"),
+          locationOf(callerPath, "RunBox(", "item")
+        ]
+      ]
+    ]) {
+      expectSymbol(index, definition, references);
+    }
+  });
+
+  it("indexes generic VB cref trivia without merging unrelated T placeholders", () => {
+    for (const comment of ["First <see", "Second <see", "CSharp <see"]) {
+      expectSymbol(
+        index,
+        locationOf(vbPath, comment, "T"),
+        [locationOf(vbPath, comment, "T", 1)]
+      );
+    }
+    // Roslyn binds both the name and the VB Of keyword to the generic method.
+    expectSymbol(index, locationOf(vbPath, "Function Echo(Of T)", "Echo"), [
+      locationOf(callerPath, "RunGeneric()", "Echo"),
+      locationOf(vbPath, "First <see", "Echo"),
+      locationOf(vbPath, "First <see", "Of"),
+      locationOf(vbPath, "Second <see", "Echo"),
+      locationOf(vbPath, "Second <see", "Of")
+    ]);
+    expectSymbol(index, locationOf(csharpPath, "static T Echo<T>", "Echo"), [
+      locationOf(vbPath, "Return CSharpApi.Echo", "Echo"),
+      locationOf(vbPath, "Return CSharpApi.Echo", "Of"),
+      locationOf(vbPath, "CSharp <see", "Echo"),
+      locationOf(vbPath, "CSharp <see", "Of")
+    ]);
   });
 });
 
-function positionOf(path, lineFragment, token) {
+function positionOf(path, lineFragment, token, occurrence = 0) {
   const lines = files[path].split("\n");
   const line = lines.findIndex((text) => text.includes(lineFragment));
   expect(line).toBeGreaterThanOrEqual(0);
-  const character = lines[line].indexOf(token);
-  expect(character).toBeGreaterThanOrEqual(0);
+  let character = -1;
+  for (let index = 0; index <= occurrence; index++) {
+    character = lines[line].indexOf(token, character + 1);
+    expect(character).toBeGreaterThanOrEqual(0);
+  }
   return { line, character };
+}
+
+function locationOf(path, lineFragment, token, occurrence = 0) {
+  const start = positionOf(path, lineFragment, token, occurrence);
+  return {
+    relativePath: path,
+    range: {
+      start,
+      end: { line: start.line, character: start.character + token.length }
+    }
+  };
+}
+
+function expectSymbol(index, definition, references) {
+  const locations = (values) => values
+    .map(({ relativePath, range }) => ({ relativePath, range }))
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  for (const occurrence of [definition, ...references]) {
+    expect(locations(index.definition(occurrence.relativePath, occurrence.range.start)))
+      .toEqual([definition]);
+    expect(locations(index.references(occurrence.relativePath, occurrence.range.start, false)))
+      .toEqual(locations(references));
+    expect(locations(index.references(occurrence.relativePath, occurrence.range.start, true)))
+      .toEqual(locations([definition, ...references]));
+  }
 }
