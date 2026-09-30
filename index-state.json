@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-09-15T14:31:22.438Z",
+  "updatedAt": "2026-09-30T14:44:01.536Z",
   "entries": {
-    "2e953c46d6cdf9e8e6944a55e253b8dc9e230df9": {
+    "d5fcb688a19ed0d3b958ff8db5bc173de5e7a746": {
       "candidate": {
-        "sha": "2e953c46d6cdf9e8e6944a55e253b8dc9e230df9",
+        "sha": "d5fcb688a19ed0d3b958ff8db5bc173de5e7a746",
         "sourceKind": "main",
         "sourceRef": "refs/heads/main",
         "sourceLabel": "main"
       },
+      "status": "queued",
       "attempts": 1,
-      "lastAttemptAt": "2026-09-15T14:31:22.438Z",
-      "lastConclusion": "failure",
-      "status": "failed"
+      "lastAttemptAt": "2026-09-30T14:44:01.536Z",
+      "lastConclusion": "queued"
     }
   }
 }
