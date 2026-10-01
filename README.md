@@ -98,6 +98,10 @@ document preparation and standard LSP crawling, not these requests. Each returne
 chunk commits occurrences, symbols, definitions, and edges in one SQLite
 transaction, reusing occurrence statements and avoiding whole-index orphan
 cleanup during append-only ingestion. Duplicate edges fail the chunk atomically.
+Definition merging reads each symbol's stored locations once and only inserts
+new locations. This avoids quadratic duplicate checks for namespaces with
+thousands of declarations repeated across batches, while retaining source
+definitions when later batches see only metadata. The on-disk schema is unchanged.
 
 The symbol graph is authoritative for C# and Visual Basic: no per-occurrence
 reference, definition, highlight, or hover LSP requests are issued for those documents.

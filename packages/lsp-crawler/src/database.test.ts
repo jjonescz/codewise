@@ -4,8 +4,199 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import { CrawlerDatabase, type SymbolGraphAppendInput } from "./database.js";
+import type { Location } from "./lsp-types.js";
 
 describe("CrawlerDatabase", () => {
+  it.each(["append", "replace"])(
+    "merges large repeated definition sets with only new-location writes (%s)",
+    async (mode) => {
+      const directory = await mkdtemp(join(tmpdir(), "codewise-many-definitions-"));
+      const path = join(directory, "index.db");
+      let database = new CrawlerDatabase(path);
+      const reader = new DatabaseSync(path, { readOnly: true });
+      const prepare = DatabaseSync.prototype.prepare;
+      let definitionWrites = 0;
+      vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (sql) {
+        const statement = prepare.call(this, sql);
+        if (sql.includes("INSERT INTO symbol_definitions")) {
+          const run = statement.run.bind(statement);
+          vi.spyOn(statement, "run").mockImplementation((...parameters) => {
+            definitionWrites++;
+            return run(...parameters);
+          });
+        }
+        return statement;
+      });
+      try {
+        const document = database.upsertDocument({
+          uri: "file:///workspace/source.cs",
+          relativePath: "source.cs",
+          languageId: "csharp",
+          contentHash: "content",
+          positionEncoding: "utf-16"
+        });
+        const definitions: Location[] = Array.from({ length: 512 }, (_, i) => ({
+          uri: `file:///workspace/source-${String(i).padStart(4, "0")}.cs`,
+          range: {
+            start: { line: 1, character: 2 },
+            end: { line: 3, character: 4 }
+          }
+        }));
+        let line = 0;
+        const save = (key: string, locations: readonly Location[]): void => {
+          const currentLine = line++;
+          const occurrence = {
+            documentId: document.id,
+            range: {
+              start: { line: currentLine, character: 0 },
+              end: { line: currentLine, character: 5 }
+            },
+            discoverySource: "semantic-token" as const
+          };
+          if (mode === "append") {
+            database.appendSymbolGraph("test", [{
+              providerKey: key,
+              occurrences: [{ ...occurrence, isDefinition: false }],
+              definitions: locations
+            }]);
+          } else {
+            const saved = database.upsertOccurrence(occurrence);
+            database.saveSymbolGraph("test", [saved.id], [{
+              providerKey: key,
+              occurrences: [{ occurrenceId: saved.id, isDefinition: false }],
+              definitions: locations
+            }]);
+          }
+        };
+        save("namespace", definitions);
+        expect(definitionWrites).toBe(512);
+        database.close();
+        database = new CrawlerDatabase(path);
+        save("namespace", [...definitions].reverse());
+        save("namespace", []);
+        expect(definitionWrites).toBe(512);
+
+        const added = [
+          { ...definitions[0]!, uri: "file:///workspace/new.cs" },
+          {
+            ...definitions[0]!,
+            range: { start: { line: 0, character: 2 }, end: { line: 3, character: 4 } }
+          },
+          {
+            ...definitions[0]!,
+            range: { start: { line: 1, character: 1 }, end: { line: 3, character: 4 } }
+          },
+          {
+            ...definitions[0]!,
+            range: { start: { line: 1, character: 2 }, end: { line: 4, character: 4 } }
+          },
+          {
+            ...definitions[0]!,
+            range: { start: { line: 1, character: 2 }, end: { line: 3, character: 5 } }
+          }
+        ];
+        save("namespace", [...definitions, ...added, ...added]);
+        save("other-namespace", [definitions[0]!]);
+        expect(definitionWrites).toBe(518);
+        const rows = reader.prepare(`
+          SELECT ordinal, uri, start_line, start_character, end_line, end_character
+          FROM symbol_definitions
+          JOIN symbols ON symbols.id = symbol_definitions.symbol_id
+          WHERE provider_key = 'namespace'
+          ORDER BY ordinal
+        `).all();
+        const sortedAdded = [...added].sort((left, right) => (
+          left.uri.localeCompare(right.uri)
+          || left.range.start.line - right.range.start.line
+          || left.range.start.character - right.range.start.character
+          || left.range.end.line - right.range.end.line
+          || left.range.end.character - right.range.end.character
+        ));
+        expect(rows).toEqual([...definitions, ...sortedAdded].map((location, ordinal) => ({
+          ordinal,
+          uri: location.uri,
+          start_line: location.range.start.line,
+          start_character: location.range.start.character,
+          end_line: location.range.end.line,
+          end_character: location.range.end.character
+        })));
+        expect(reader.prepare(`
+          SELECT COUNT(*) AS count FROM symbol_definitions
+          JOIN symbols ON symbols.id = symbol_definitions.symbol_id
+          WHERE provider_key = 'other-namespace'
+        `).get()?.["count"]).toBe(1);
+        expect(reader.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      } finally {
+        vi.restoreAllMocks();
+        reader.close();
+        database.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("rolls back merged definitions and retries without stale deduplication state", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-definition-rollback-"));
+    const path = join(directory, "index.db");
+    const database = new CrawlerDatabase(path);
+    const reader = new DatabaseSync(path, { readOnly: true });
+    try {
+      const document = database.upsertDocument({
+        uri: "file:///workspace/source.cs",
+        relativePath: "source.cs",
+        languageId: "csharp",
+        contentHash: "content",
+        positionEncoding: "utf-16"
+      });
+      const range = {
+        start: { line: 0, character: 0 },
+        end: { line: 0, character: 5 }
+      };
+      const original: SymbolGraphAppendInput = {
+        providerKey: "namespace",
+        definitions: [{ uri: document.uri, range }],
+        occurrences: [{
+          documentId: document.id,
+          range,
+          discoverySource: "semantic-token",
+          isDefinition: true
+        }]
+      };
+      database.appendSymbolGraph("test", [original]);
+      const next: SymbolGraphAppendInput = {
+        ...original,
+        definitions: [
+          ...original.definitions,
+          { uri: "file:///workspace/second.cs", range }
+        ],
+        occurrences: [{
+          ...original.occurrences[0]!,
+          range: {
+            start: { line: 1, character: 0 },
+            end: { line: 1, character: 5 }
+          }
+        }]
+      };
+      const definitions = reader.prepare(
+        "SELECT ordinal, uri FROM symbol_definitions ORDER BY ordinal"
+      );
+      expect(() => database.appendSymbolGraph("test", [
+        next,
+        { providerKey: "invalid", occurrences: [], definitions: [] }
+      ])).toThrow("at least one occurrence");
+      expect(definitions.all()).toEqual([{ ordinal: 0, uri: document.uri }]);
+      expect(database.appendSymbolGraph("test", [next])).toBe(1);
+      expect(definitions.all()).toEqual([
+        { ordinal: 0, uri: document.uri },
+        { ordinal: 1, uri: "file:///workspace/second.cs" }
+      ]);
+    } finally {
+      reader.close();
+      database.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("commits graph occurrences and edges atomically and reuses occurrence statements", async () => {
     const directory = await mkdtemp(join(tmpdir(), "codewise-graph-append-"));
     const path = join(directory, "index.db");

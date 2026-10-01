@@ -438,6 +438,11 @@ export class CrawlerDatabase {
         symbol_id = excluded.symbol_id,
         is_definition = excluded.is_definition` : ""}
     `);
+    const selectDefinitions = this.#database.prepare(`
+      SELECT ordinal, uri, start_line, start_character, end_line, end_character
+      FROM symbol_definitions
+      WHERE symbol_id = ?
+    `);
     const insertDefinition = this.#database.prepare(`
       INSERT INTO symbol_definitions (
         symbol_id,
@@ -448,21 +453,7 @@ export class CrawlerDatabase {
         end_line,
         end_character
       )
-      SELECT
-        ?,
-        COALESCE((
-          SELECT MAX(ordinal) + 1 FROM symbol_definitions WHERE symbol_id = ?
-        ), 0),
-        ?, ?, ?, ?, ?
-      WHERE NOT EXISTS (
-        SELECT 1 FROM symbol_definitions
-        WHERE symbol_id = ?
-          AND uri = ?
-          AND start_line = ?
-          AND start_character = ?
-          AND end_line = ?
-          AND end_character = ?
-      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     for (const symbol of symbols) {
       if (symbol.occurrences.length === 0) {
@@ -486,21 +477,42 @@ export class CrawlerDatabase {
         );
       }
       // Another language may see only metadata for a symbol defined in source.
+      if (symbol.definitions.length === 0) {
+        continue;
+      }
+      // Namespaces can have thousands of definitions repeated in every chunk.
+      // Read them once instead of scanning the stored list for every location.
+      const definitionKeys = new Set<string>();
+      let nextOrdinal = 0;
+      for (const row of selectDefinitions.iterate(symbolId)) {
+        const ordinal = row["ordinal"];
+        if (typeof ordinal !== "number" || !Number.isSafeInteger(ordinal)) {
+          throw new Error("Expected a symbol definition ordinal to be an integer.");
+        }
+        nextOrdinal = Math.max(nextOrdinal, ordinal + 1);
+        definitionKeys.add([
+          row["uri"],
+          row["start_line"],
+          row["start_character"],
+          row["end_line"],
+          row["end_character"]
+        ].join("\0"));
+      }
       for (const definition of normalizeLocations(symbol.definitions)) {
-        const locationValues = [
+        const key = locationKey(definition);
+        if (definitionKeys.has(key)) {
+          continue;
+        }
+        insertDefinition.run(
+          symbolId,
+          nextOrdinal++,
           definition.uri,
           definition.range.start.line,
           definition.range.start.character,
           definition.range.end.line,
           definition.range.end.character
-        ];
-        insertDefinition.run(
-          symbolId,
-          symbolId,
-          ...locationValues,
-          symbolId,
-          ...locationValues
         );
+        definitionKeys.add(key);
       }
     }
   }
