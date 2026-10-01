@@ -87,19 +87,27 @@ export async function detectRemoteHubRevision(
   return commit;
 }
 
-export async function detectGitHubPullRequestRevision(
+export async function detectGitHubRevision(
   workspaceUri: RemoteHubUri,
   fetcher: typeof fetch = fetch
 ): Promise<string | undefined> {
-  const pullRequest = parseGitHubPullRequestWorkspace(workspaceUri);
-  if (pullRequest === undefined) {
+  const workspace = parseGitHubWorkspace(workspaceUri);
+  if (workspace === undefined) {
     return undefined;
   }
 
-  const { owner, repository, number } = pullRequest;
+  const { owner, repository, ref } = workspace;
+  if (ref.type === "commit") {
+    return ref.id;
+  }
+  const isPullRequest = ref.type === "pull-request";
+  const description = isPullRequest ? "pull request" : "workspace";
+  const revisionPath = isPullRequest
+    ? `git/ref/pull/${ref.id}/head`
+    : `commits/${encodeURIComponent(ref.id)}`;
   const response = await fetcher(
     `https://api.github.com/repos/${encodeURIComponent(owner)}/`
-    + `${encodeURIComponent(repository)}/git/ref/pull/${number}/head`,
+    + `${encodeURIComponent(repository)}/${revisionPath}`,
     {
       headers: {
         Accept: "application/vnd.github+json",
@@ -112,14 +120,16 @@ export async function detectGitHubPullRequestRevision(
       ? String(response.status)
       : `${response.status} ${response.statusText}`;
     throw new Error(
-      `GitHub pull request revision lookup failed with HTTP ${status}.`
+      `GitHub ${description} revision lookup failed with HTTP ${status}.`
     );
   }
 
   const payload: unknown = await response.json();
-  const revision = getPullRequestHeadRevision(payload);
+  const revision = isPullRequest
+    ? getPullRequestHeadRevision(payload)
+    : isRecord(payload) ? normalizeCommit(payload["sha"]) : undefined;
   if (revision === undefined) {
-    throw new Error("GitHub returned an invalid pull request ref response.");
+    throw new Error(`GitHub returned an invalid ${description} ref response.`);
   }
   return revision;
 }
@@ -129,15 +139,18 @@ function isProviderUnavailableError(error: unknown): boolean {
     && /No provider registered/iu.test(error.message);
 }
 
-interface GitHubPullRequestWorkspace {
+interface GitHubWorkspace {
   readonly owner: string;
   readonly repository: string;
-  readonly number: string;
+  readonly ref: {
+    readonly type: "ref" | "commit" | "pull-request";
+    readonly id: string;
+  };
 }
 
-function parseGitHubPullRequestWorkspace(
+function parseGitHubWorkspace(
   workspaceUri: RemoteHubUri
-): GitHubPullRequestWorkspace | undefined {
+): GitHubWorkspace | undefined {
   if (workspaceUri.scheme !== "vscode-vfs") {
     return undefined;
   }
@@ -146,20 +159,7 @@ function parseGitHubPullRequestWorkspace(
   const provider = separatorIndex === -1
     ? workspaceUri.authority
     : workspaceUri.authority.slice(0, separatorIndex);
-  if (provider.toLowerCase() !== "github" || separatorIndex === -1) {
-    return undefined;
-  }
-
-  const encodedMetadata = workspaceUri.authority.slice(separatorIndex + 1);
-  const metadata = decodeAuthorityMetadata(encodedMetadata);
-  if (
-    !isRecord(metadata)
-    || metadata["v"] !== 1
-    || !isRecord(metadata["ref"])
-    || metadata["ref"]["type"] !== 3
-    || typeof metadata["ref"]["id"] !== "string"
-    || !/^[1-9][0-9]*$/u.test(metadata["ref"]["id"])
-  ) {
+  if (provider.toLowerCase() !== "github") {
     return undefined;
   }
 
@@ -170,11 +170,50 @@ function parseGitHubPullRequestWorkspace(
     return undefined;
   }
 
-  return {
-    owner,
-    repository,
-    number: metadata["ref"]["id"]
-  };
+  let ref: GitHubWorkspace["ref"] = { type: "ref", id: "HEAD" };
+  if (separatorIndex !== -1) {
+    const metadata = decodeAuthorityMetadata(
+      workspaceUri.authority.slice(separatorIndex + 1)
+    );
+    if (!isRecord(metadata) || metadata["v"] !== 1) {
+      throw new Error("The GitHub workspace URI contains unsupported metadata.");
+    }
+    if (metadata["ref"] !== undefined) {
+      const encodedRef = metadata["ref"];
+      if (
+        !isRecord(encodedRef)
+        || typeof encodedRef["id"] !== "string"
+        || encodedRef["id"].trim() === ""
+      ) {
+        throw new Error("The GitHub workspace URI contains an invalid ref.");
+      }
+      const id = encodedRef["id"];
+      switch (encodedRef["type"]) {
+        case 0: // Branch
+        case 1: // Tag
+        case 4: // Tree
+          ref = { type: "ref", id };
+          break;
+        case 2: {
+          const commit = normalizeCommit(id);
+          if (commit === undefined) {
+            throw new Error("The GitHub workspace URI contains an invalid commit.");
+          }
+          ref = { type: "commit", id: commit };
+          break;
+        }
+        case 3:
+          if (!/^[1-9][0-9]*$/u.test(id)) {
+            throw new Error("The GitHub workspace URI contains an invalid pull request.");
+          }
+          ref = { type: "pull-request", id };
+          break;
+        default:
+          throw new Error("The GitHub workspace URI contains an unsupported ref type.");
+      }
+    }
+  }
+  return { owner, repository, ref };
 }
 
 function decodeAuthorityMetadata(encodedMetadata: string): unknown {
@@ -214,8 +253,15 @@ function getPullRequestHeadRevision(payload: unknown): string | undefined {
     return undefined;
   }
 
-  const revision = payload["object"]["sha"].trim().toLowerCase();
-  return gitCommitPattern.test(revision) ? revision : undefined;
+  return normalizeCommit(payload["object"]["sha"]);
+}
+
+function normalizeCommit(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const commit = value.trim().toLowerCase();
+  return gitCommitPattern.test(commit) ? commit : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

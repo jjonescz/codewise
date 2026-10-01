@@ -1,6 +1,11 @@
 import * as vscode from "vscode";
 import { formatError, logError, logMessage } from "./extension-logging.js";
-import { downloadRoslynArtifact } from "./github-artifact.js";
+import {
+  downloadRoslynArtifact,
+  findLatestRoslynArtifact,
+  findRoslynArtifact
+} from "./github-artifact.js";
+import { gitCommitPattern } from "./remote-hub-revision.js";
 import {
   extractVerifiedRoslynIndex,
   RoslynIndexValidationError,
@@ -16,7 +21,7 @@ const roslynProjectPath = [
 ] as const;
 
 export async function resolveDownloadedRoslynIndex(
-  context: vscode.ExtensionContext,
+  context: Pick<vscode.ExtensionContext, "globalStorageUri">,
   workspaceFolder: vscode.WorkspaceFolder,
   output: vscode.OutputChannel,
   resolveCommit: () => Promise<string | undefined>
@@ -29,62 +34,190 @@ export async function resolveDownloadedRoslynIndex(
     `Detected a compatible Roslyn workspace at ${workspaceFolder.uri.toString()}.`
   );
 
-  const commit = await resolveCommit();
-  if (commit === undefined) {
+  const configuredCommit = vscode.workspace.getConfiguration(
+    "codewise",
+    workspaceFolder.uri
+  ).get<string>("roslynCommit", "").trim().toLowerCase();
+  const workspaceCommit = configuredCommit !== ""
+    ? configuredCommit
+    : await resolveCommit();
+  if (workspaceCommit === undefined) {
     logMessage(output, "Roslyn commit selection was cancelled.");
     return undefined;
   }
-  validateCommit(commit);
-  logMessage(output, `Resolving Codewise index for Roslyn commit ${commit}.`);
+  validateCommit(workspaceCommit);
+  logMessage(output, `Resolving Codewise index for Roslyn commit ${workspaceCommit}.`);
 
-  const cacheDirectory = vscode.Uri.joinPath(
-    context.globalStorageUri,
-    "roslyn",
-    commit
-  );
-  const indexUri = vscode.Uri.joinPath(cacheDirectory, "index.db");
-  const manifestUri = vscode.Uri.joinPath(cacheDirectory, "manifest.json");
-
-  if (await isValidCachedIndex(indexUri, manifestUri, commit, output)) {
-    logMessage(output, `Using cached Roslyn Codewise index for ${commit}.`);
-    return indexUri;
+  const workspaceCache = getCacheUris(context, workspaceCommit);
+  if (await isValidCachedIndex(
+    workspaceCache.indexUri,
+    workspaceCache.manifestUri,
+    workspaceCommit,
+    output
+  )) {
+    logMessage(output, `Using cached Roslyn Codewise index for ${workspaceCommit}.`);
+    return workspaceCache.indexUri;
   }
-  logMessage(output, `No valid cached Codewise index was found for ${commit}.`);
+  logMessage(output, `No valid cached Codewise index was found for ${workspaceCommit}.`);
 
-  const verifiedIndex = await vscode.window.withProgress(
+  const result = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: `Downloading Roslyn Codewise index for ${commit.slice(0, 12)}`,
+      title: `Resolving Roslyn Codewise index for ${workspaceCommit.slice(0, 12)}`,
       cancellable: false
     },
     async (progress) => {
       progress.report({ message: "Authenticating with GitHub..." });
       const session = await getGitHubSession(output);
       progress.report({ message: "Finding workflow artifact..." });
-      const artifact = await downloadRoslynArtifact(
-        commit,
+      const logger = (message: string) => logMessage(output, message);
+      const exactArtifact = await findRoslynArtifact(
+        workspaceCommit,
         session.accessToken,
-        (message) => logMessage(output, message)
+        logger
+      );
+      let selection = exactArtifact === undefined
+        ? undefined
+        : { commit: workspaceCommit, artifact: exactArtifact };
+      if (selection === undefined && configuredCommit === "") {
+        progress.report({ message: "Finding the latest indexed commit in branch history..." });
+        selection = await findLatestRoslynArtifact(
+          workspaceCommit,
+          session.accessToken,
+          logger
+        );
+      }
+      if (selection === undefined) {
+        throw new Error(
+          `No retained Roslyn Codewise workflow artifact is available for commit ${workspaceCommit}`
+          + (configuredCommit === "" ? " or any indexed ancestor." : ".")
+        );
+      }
+
+      const { commit, artifact } = selection;
+      if (commit !== workspaceCommit) {
+        const cache = getCacheUris(context, commit);
+        if (await isValidCachedIndex(
+          cache.indexUri,
+          cache.manifestUri,
+          commit,
+          output
+        )) {
+          return { commit, verifiedIndex: undefined };
+        }
+      }
+      progress.report({ message: `Downloading index for ${commit.slice(0, 12)}...` });
+      const bytes = await downloadRoslynArtifact(
+        artifact,
+        session.accessToken,
+        logger
       );
       progress.report({ message: "Extracting and verifying index..." });
-      const verified = await extractVerifiedRoslynIndex(artifact, commit);
+      const verifiedIndex = await extractVerifiedRoslynIndex(bytes, commit);
       logMessage(output, "Artifact extraction and manifest verification succeeded.");
-      return verified;
+      return { commit, verifiedIndex };
     }
   );
 
-  await writeCacheAtomically(
-    cacheDirectory,
-    indexUri,
-    manifestUri,
-    verifiedIndex.index,
-    verifiedIndex.manifest
-  );
-  logMessage(output, `Downloaded and cached Roslyn Codewise index for ${commit}.`);
-  void vscode.window.showInformationMessage(
-    `Codewise downloaded the Roslyn index for ${commit.slice(0, 12)}.`
-  );
+  const { commit, verifiedIndex } = result;
+  const { cacheDirectory, indexUri, manifestUri } = getCacheUris(context, commit);
+  if (verifiedIndex === undefined) {
+    logMessage(output, `Using cached Roslyn Codewise index for ${commit}.`);
+  } else {
+    await writeCacheAtomically(
+      cacheDirectory,
+      indexUri,
+      manifestUri,
+      verifiedIndex.index,
+      verifiedIndex.manifest
+    );
+    logMessage(output, `Downloaded and cached Roslyn Codewise index for ${commit}.`);
+  }
+  if (commit !== workspaceCommit) {
+    const message = `Codewise is using an index for ${commit.slice(0, 12)}, `
+      + `an older commit in the history of ${workspaceCommit.slice(0, 12)}. `
+      + "Navigation and hover results may be inaccurate for changed files.";
+    logMessage(output, message);
+    void showFallbackWarning(message).catch((error: unknown) => {
+      logError(output, "Could not select a different Roslyn index commit", error);
+      void vscode.window.showErrorMessage(
+        `Codewise could not select a different commit: ${formatError(error)}`
+      );
+    });
+  } else if (verifiedIndex !== undefined) {
+    void vscode.window.showInformationMessage(
+      `Codewise downloaded the Roslyn index for ${commit.slice(0, 12)}.`
+    );
+  }
   return indexUri;
+}
+
+export function registerRoslynCommitCommand(
+  restart: () => Promise<void>
+): vscode.Disposable {
+  return vscode.commands.registerCommand("codewise.selectRoslynCommit", async () => {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (workspaceFolder === undefined) {
+      await vscode.window.showErrorMessage("Codewise requires an open workspace folder.");
+      return;
+    }
+    const configuration = vscode.workspace.getConfiguration("codewise", workspaceFolder.uri);
+    const commit = await promptRoslynCommit(
+      configuration.get<string>("roslynCommit", "")
+    );
+    if (commit === undefined) {
+      return;
+    }
+    await configuration.update(
+      "roslynCommit",
+      commit,
+      vscode.ConfigurationTarget.Workspace
+    );
+    await restart();
+  });
+}
+
+export async function promptRoslynCommit(value = ""): Promise<string | undefined> {
+  const enteredCommit = await vscode.window.showInputBox({
+    title: "Roslyn Codewise index commit",
+    prompt: "Enter the full commit SHA whose Roslyn index should be used.",
+    placeHolder: "40-character Git commit SHA",
+    value,
+    ignoreFocusOut: true,
+    validateInput: (input) => (
+      gitCommitPattern.test(input.trim().toLowerCase())
+        ? undefined
+        : "Enter a full 40-character hexadecimal Git commit SHA."
+    )
+  });
+  if (enteredCommit === undefined) {
+    return undefined;
+  }
+  const commit = enteredCommit.trim().toLowerCase();
+  validateCommit(commit);
+  return commit;
+}
+
+async function showFallbackWarning(message: string): Promise<void> {
+  const selected = await vscode.window.showWarningMessage(
+    message,
+    "Choose Different Commit"
+  );
+  if (selected === "Choose Different Commit") {
+    await vscode.commands.executeCommand("codewise.selectRoslynCommit");
+  }
+}
+
+function getCacheUris(
+  context: Pick<vscode.ExtensionContext, "globalStorageUri">,
+  commit: string
+) {
+  const cacheDirectory = vscode.Uri.joinPath(context.globalStorageUri, "roslyn", commit);
+  return {
+    cacheDirectory,
+    indexUri: vscode.Uri.joinPath(cacheDirectory, "index.db"),
+    manifestUri: vscode.Uri.joinPath(cacheDirectory, "manifest.json")
+  };
 }
 
 async function getGitHubSession(
@@ -231,7 +364,7 @@ function isFileNotFound(error: unknown): boolean {
 }
 
 function validateCommit(commit: string): void {
-  if (!/^[a-f0-9]{40}$/u.test(commit)) {
+  if (!gitCommitPattern.test(commit)) {
     throw new Error(`Invalid Roslyn commit: ${commit}`);
   }
 }

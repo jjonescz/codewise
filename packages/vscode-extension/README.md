@@ -20,11 +20,21 @@ and caches the index by commit in extension global storage.
 
 Desktop VS Code obtains the Roslyn commit from local Git. On vscode.dev and
 github.dev, the extension first obtains the exact revision from the built-in
-Remote Repositories metadata API. For a GitHub pull request workspace, it can
-also resolve the encoded pull request's head ref through the public GitHub API.
+Remote Repositories metadata API. If that is unavailable, it resolves the
+workspace's default branch, encoded branch, tag, or pull request ref through
+the public GitHub API; an encoded commit is used directly.
 If automatic detection is unavailable, it falls back to a previously entered
 SHA or asks for the full SHA and remembers it in workspace state. You can
 override automatic detection with `codewise.roslynCommit`.
+
+If no exact index is retained, Codewise automatically uses the closest retained
+indexed ancestor of the workspace commit, never an index from unrelated branch
+history. A warning explains that navigation and hover may be inaccurate for
+changed files and offers **Choose Different Commit**. You can also run
+**Codewise: Select Roslyn Index Commit** to set an exact commit and restart the
+server. An explicit `codewise.roslynCommit` disables automatic fallback; clear
+the setting to restore automatic selection. Cached indexes remain keyed and
+verified against the indexed commit, not the newer workspace commit.
 
 When a virtual web workspace inherits a desktop `file` path in
 `codewise.indexPath`, the extension ignores that unavailable path and

@@ -8,7 +8,10 @@ import {
   type ServerOptions
 } from "vscode-languageclient/node";
 import { logError, logMessage } from "./extension-logging.js";
-import { resolveDownloadedRoslynIndex } from "./roslyn-index-provider.js";
+import {
+  registerRoslynCommitCommand,
+  resolveDownloadedRoslynIndex
+} from "./roslyn-index-provider.js";
 import {
   missingWorkspaceIndexMessage,
   workspaceIndexPathSegments
@@ -20,6 +23,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const output = vscode.window.createOutputChannel("Codewise");
   context.subscriptions.push(
     output,
+    registerRoslynCommitCommand(() => restartClient(context, output)),
     vscode.commands.registerCommand("codewise.selectIndex", async () => {
       const selected = await vscode.window.showOpenDialog({
         canSelectFiles: true,

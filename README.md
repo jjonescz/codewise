@@ -256,12 +256,18 @@ the official SQLite WASM build bundled in the extension.
 The **Codewise: Select Index File** command can select another index exposed by the
 virtual workspace.
 
-For a Roslyn workspace without a checked-in index, enter the exact 40-character
-workspace commit when prompted. The extension remembers it in workspace state,
-downloads the matching workflow artifact, verifies it, and caches it in web
-extension storage. You can instead preconfigure
-`codewise.roslynCommit`. github.dev does not expose the active Git commit
-to extensions, so this value cannot be inferred there.
+For a Roslyn workspace without a checked-in index, the extension automatically
+detects the workspace commit through Remote Repositories or the GitHub workspace
+ref, including the default branch in a plain repository URL. It downloads the
+matching workflow artifact, verifies it, and caches it in web extension storage.
+When no exact index is retained, it falls back to the closest retained indexed
+ancestor in that commit's history and warns that results may be inaccurate for
+changed files. The warning offers **Choose Different Commit**; the
+**Codewise: Select Roslyn Index Commit** command is also available on desktop
+and web. Setting `codewise.roslynCommit` explicitly requires that exact index
+and disables fallback. Clear the setting to restore automatic selection.
+If commit detection is unavailable, the extension asks for a full 40-character
+SHA and remembers it in workspace state.
 
 Use the **Run Codewise for Web** launch configuration to build the
 extension and open an interactive local VS Code web workbench. The prompted

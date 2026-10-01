@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  detectGitHubPullRequestRevision,
+  detectGitHubRevision,
   detectRemoteHubRevision,
   type RemoteHubApi,
   type RemoteHubExtension,
@@ -175,7 +175,7 @@ describe("detectRemoteHubRevision", () => {
   });
 });
 
-describe("detectGitHubPullRequestRevision", () => {
+describe("detectGitHubRevision", () => {
   it("resolves the head commit from an encoded pull request workspace", async () => {
     const fetcher = vi.fn<typeof fetch>(async () => Response.json({
       ref: "refs/pull/84419/head",
@@ -186,7 +186,7 @@ describe("detectGitHubPullRequestRevision", () => {
     }));
 
     await expect(
-      detectGitHubPullRequestRevision(workspaceUri, fetcher)
+      detectGitHubRevision(workspaceUri, fetcher)
     ).resolves.toBe(commit);
 
     expect(fetcher).toHaveBeenCalledWith(
@@ -200,16 +200,72 @@ describe("detectGitHubPullRequestRevision", () => {
     );
   });
 
-  it("ignores workspaces that are not opened to a GitHub pull request", async () => {
-    const fetcher = vi.fn<typeof fetch>();
-    const branchWorkspace: RemoteHubUri = {
+  it("resolves the default branch of a plain repository workspace", async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({
+      sha: commit.toUpperCase()
+    }));
+    const defaultWorkspace: RemoteHubUri = {
       ...workspaceUri,
       authority: "github",
       toString: () => "vscode-vfs://github/dotnet/roslyn"
     };
 
+    await expect(detectGitHubRevision(defaultWorkspace, fetcher)).resolves.toBe(commit);
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://api.github.com/repos/dotnet/roslyn/commits/HEAD",
+      expect.any(Object)
+    );
+  });
+
+  it.each([
+    [0, "feature/navigation"],
+    [1, "v4.0.0"],
+    [4, "main"]
+  ])("resolves encoded ref type %s without assuming the default branch", async (type, id) => {
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ sha: commit }));
+
     await expect(
-      detectGitHubPullRequestRevision(branchWorkspace, fetcher)
+      detectGitHubRevision(workspaceWithRef(type, id), fetcher)
+    ).resolves.toBe(commit);
+    expect(fetcher).toHaveBeenCalledWith(
+      `https://api.github.com/repos/dotnet/roslyn/commits/${encodeURIComponent(id)}`,
+      expect.any(Object)
+    );
+  });
+
+  it("uses an encoded commit without a GitHub request", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+
+    await expect(
+      detectGitHubRevision(workspaceWithRef(2, commit.toUpperCase()), fetcher)
+    ).resolves.toBe(commit);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("resolves metadata without a ref to the default branch", async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ sha: commit }));
+    const uri = {
+      ...workspaceUri,
+      authority: `github+${Buffer.from(JSON.stringify({ v: 1 })).toString("hex")}`
+    };
+
+    await expect(detectGitHubRevision(uri, fetcher)).resolves.toBe(commit);
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://api.github.com/repos/dotnet/roslyn/commits/HEAD",
+      expect.any(Object)
+    );
+  });
+
+  it("ignores non-GitHub workspaces", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const branchWorkspace: RemoteHubUri = {
+      ...workspaceUri,
+      authority: "azurerepos",
+      toString: () => "vscode-vfs://azurerepos/dotnet/roslyn"
+    };
+
+    await expect(
+      detectGitHubRevision(branchWorkspace, fetcher)
     ).resolves.toBeUndefined();
     expect(fetcher).not.toHaveBeenCalled();
   });
@@ -221,7 +277,7 @@ describe("detectGitHubPullRequestRevision", () => {
     }));
 
     await expect(
-      detectGitHubPullRequestRevision(workspaceUri, fetcher)
+      detectGitHubRevision(workspaceUri, fetcher)
     ).rejects.toThrow(
       "GitHub pull request revision lookup failed with HTTP 403 rate limit exceeded."
     );
@@ -236,9 +292,43 @@ describe("detectGitHubPullRequestRevision", () => {
     }));
 
     await expect(
-      detectGitHubPullRequestRevision(workspaceUri, fetcher)
+      detectGitHubRevision(workspaceUri, fetcher)
     ).rejects.toThrow(
       "GitHub returned an invalid pull request ref response."
     );
   });
+
+  it("rejects invalid branch responses instead of returning a branch name", async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ sha: "main" }));
+
+    await expect(detectGitHubRevision(workspaceWithRef(0, "main"), fetcher))
+      .rejects.toThrow("GitHub returned an invalid workspace ref response.");
+  });
+
+  it.each([
+    [2, "not-a-commit"],
+    [3, "0"],
+    [0, ""],
+    [99, "main"]
+  ])("rejects invalid encoded ref type %s and ID %s", async (type, id) => {
+    const fetcher = vi.fn<typeof fetch>();
+
+    await expect(detectGitHubRevision(workspaceWithRef(type, id), fetcher))
+      .rejects.toThrow("The GitHub workspace URI contains");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("rejects corrupt authority metadata", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(detectGitHubRevision({
+      ...workspaceUri,
+      authority: "github+not-hex"
+    }, fetcher)).rejects.toThrow("The GitHub workspace URI contains invalid metadata.");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });
+
+function workspaceWithRef(type: number, id: string): RemoteHubUri {
+  const metadata = Buffer.from(JSON.stringify({ v: 1, ref: { type, id } })).toString("hex");
+  return { ...workspaceUri, authority: `github+${metadata}` };
+}

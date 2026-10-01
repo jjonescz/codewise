@@ -28,33 +28,33 @@ export class GitHubArtifactHttpError extends Error {
 }
 
 interface ArtifactList {
-  readonly artifacts: readonly Artifact[];
+  readonly artifacts: readonly RoslynArtifact[];
 }
 
-interface Artifact {
+export interface RoslynArtifact {
   readonly id: number;
   readonly name: string;
   readonly expired: boolean;
   readonly created_at: string;
 }
 
+export interface RoslynArtifactSelection {
+  readonly commit: string;
+  readonly artifact: RoslynArtifact;
+}
+
 export async function downloadRoslynArtifact(
-  commit: string,
+  commitOrArtifact: string | RoslynArtifact,
   accessToken: string,
   logger?: ArtifactLogger,
   fetcher: typeof fetch = fetch
 ): Promise<Uint8Array> {
-  const artifactName = `roslyn-codewise-${commit}`;
-  logger?.(`Looking up GitHub Actions artifact ${artifactName}.`);
-  const artifact = await findRoslynArtifact(
-    artifactName,
-    accessToken,
-    fetcher,
-    logger
-  );
+  const artifact = typeof commitOrArtifact === "string"
+    ? await findRoslynArtifact(commitOrArtifact, accessToken, logger, fetcher)
+    : commitOrArtifact;
   if (artifact === undefined) {
     throw new Error(
-      `No retained Roslyn Codewise workflow artifact is available for commit ${commit}.`
+      `No retained Roslyn Codewise workflow artifact is available for commit ${commitOrArtifact}.`
     );
   }
   logger?.(
@@ -85,35 +85,19 @@ export async function downloadRoslynArtifact(
   return bytes;
 }
 
-async function findRoslynArtifact(
-  artifactName: string,
+export async function findRoslynArtifact(
+  commit: string,
   accessToken: string,
-  fetcher: typeof fetch,
-  logger?: ArtifactLogger
-): Promise<Artifact | undefined> {
+  logger?: ArtifactLogger,
+  fetcher: typeof fetch = fetch
+): Promise<RoslynArtifact | undefined> {
+  const artifactName = `roslyn-codewise-${commit}`;
+  logger?.(`Looking up GitHub Actions artifact ${artifactName}.`);
   const query = new URLSearchParams({
     name: artifactName,
     per_page: "100"
   });
-  const response = await fetcher(
-    `https://api.github.com/repos/${indexerOwner}/${indexerRepository}/actions/artifacts?${query}`,
-    { headers: createHeaders(accessToken) }
-  );
-  logger?.(
-    `Artifact lookup returned HTTP ${describeHttpResponse(response)}.`
-  );
-  if (!response.ok) {
-    throw new GitHubArtifactHttpError(
-      "lookup",
-      response.status,
-      response.statusText
-    );
-  }
-
-  const payload: unknown = await response.json();
-  if (!isArtifactList(payload)) {
-    throw new Error("GitHub returned an invalid artifact-list response.");
-  }
+  const payload = await listArtifacts(query, accessToken, fetcher, logger);
 
   const candidates = payload.artifacts
     .filter((artifact) => artifact.name === artifactName && !artifact.expired)
@@ -123,6 +107,110 @@ async function findRoslynArtifact(
     + `${candidates.length} retained candidate(s).`
   );
   return candidates[0];
+}
+
+export async function findLatestRoslynArtifact(
+  workspaceCommit: string,
+  accessToken: string,
+  logger?: ArtifactLogger,
+  fetcher: typeof fetch = fetch
+): Promise<RoslynArtifactSelection | undefined> {
+  const candidates = new Map<string, RoslynArtifact>();
+  for (let page = 1; ; page += 1) {
+    const payload = await listArtifacts(
+      new URLSearchParams({ per_page: "100", page: String(page) }),
+      accessToken,
+      fetcher,
+      logger
+    );
+    for (const artifact of payload.artifacts) {
+      const match = /^roslyn-codewise-([a-f0-9]{40})$/u.exec(artifact.name);
+      const commit = match?.[1];
+      if (commit === undefined || artifact.expired) {
+        continue;
+      }
+      const previous = candidates.get(commit);
+      if (
+        previous === undefined
+        || artifact.created_at.localeCompare(previous.created_at) > 0
+      ) {
+        candidates.set(commit, artifact);
+      }
+    }
+    if (payload.artifacts.length < 100) {
+      break;
+    }
+  }
+
+  logger?.(
+    `Checking ${candidates.size} retained indexed commit(s) against Roslyn history.`
+  );
+  let selection: RoslynArtifactSelection | undefined;
+  let minimumDistance = Number.POSITIVE_INFINITY;
+  for (const [commit, artifact] of candidates) {
+    if (commit === workspaceCommit) {
+      return { commit, artifact };
+    }
+    const response = await fetcher(
+      `https://api.github.com/repos/dotnet/roslyn/compare/`
+      + `${commit}...${workspaceCommit}?per_page=1`,
+      { headers: createHeaders(accessToken) }
+    );
+    if (!response.ok) {
+      throw new Error(
+        `GitHub Roslyn history lookup failed with HTTP ${describeHttpResponse(response)}.`
+      );
+    }
+    const comparison: unknown = await response.json();
+    if (
+      !isRecord(comparison)
+      || !["ahead", "behind", "diverged", "identical"].includes(
+        String(comparison["status"])
+      )
+      || typeof comparison["ahead_by"] !== "number"
+      || !Number.isSafeInteger(comparison["ahead_by"])
+      || comparison["ahead_by"] < 0
+    ) {
+      throw new Error("GitHub returned an invalid commit-comparison response.");
+    }
+    if (
+      (comparison["status"] === "ahead" || comparison["status"] === "identical")
+      && comparison["ahead_by"] < minimumDistance
+    ) {
+      selection = { commit, artifact };
+      minimumDistance = comparison["ahead_by"];
+    }
+  }
+  logger?.(selection === undefined
+    ? `No retained indexed ancestor was found for ${workspaceCommit}.`
+    : `Selected indexed ancestor ${selection.commit}, ${minimumDistance} commit(s) behind ${workspaceCommit}.`
+  );
+  return selection;
+}
+
+async function listArtifacts(
+  query: URLSearchParams,
+  accessToken: string,
+  fetcher: typeof fetch,
+  logger?: ArtifactLogger
+): Promise<ArtifactList> {
+  const response = await fetcher(
+    `https://api.github.com/repos/${indexerOwner}/${indexerRepository}/actions/artifacts?${query}`,
+    { headers: createHeaders(accessToken) }
+  );
+  logger?.(`Artifact lookup returned HTTP ${describeHttpResponse(response)}.`);
+  if (!response.ok) {
+    throw new GitHubArtifactHttpError(
+      "lookup",
+      response.status,
+      response.statusText
+    );
+  }
+  const payload: unknown = await response.json();
+  if (!isArtifactList(payload)) {
+    throw new Error("GitHub returned an invalid artifact-list response.");
+  }
+  return payload;
 }
 
 function createHeaders(accessToken: string): HeadersInit {

@@ -16,12 +16,16 @@ import {
 } from "./browser-worker.js";
 import { logError, logMessage } from "./extension-logging.js";
 import {
-  detectGitHubPullRequestRevision,
+  detectGitHubRevision,
   detectRemoteHubRevision,
   gitCommitPattern,
   type RemoteHubApi
 } from "./remote-hub-revision.js";
-import { resolveDownloadedRoslynIndex } from "./roslyn-index-provider.js";
+import {
+  promptRoslynCommit,
+  registerRoslynCommitCommand,
+  resolveDownloadedRoslynIndex
+} from "./roslyn-index-provider.js";
 import {
   missingWorkspaceIndexMessage,
   workspaceIndexPathSegments
@@ -39,6 +43,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const output = vscode.window.createOutputChannel("Codewise");
   context.subscriptions.push(
     output,
+    registerRoslynCommitCommand(() => restartClient(context, output)),
     vscode.commands.registerCommand("codewise.selectIndex", async () => {
       const selected = await vscode.window.showOpenDialog({
         canSelectFiles: true,
@@ -299,19 +304,6 @@ async function resolveBrowserRoslynCommit(
   workspaceFolder: vscode.WorkspaceFolder,
   output: vscode.OutputChannel
 ): Promise<string | undefined> {
-  const configuredCommit = getConfiguredValue(
-    "roslynCommit",
-    workspaceFolder.uri
-  ).toLowerCase();
-  if (configuredCommit !== "") {
-    if (!gitCommitPattern.test(configuredCommit)) {
-      throw new Error(
-        "codewise.roslynCommit must be a full 40-character Git commit SHA."
-      );
-    }
-    return configuredCommit;
-  }
-
   try {
     const detectedCommit = await detectRemoteHubRevision(
       workspaceFolder.uri,
@@ -333,7 +325,7 @@ async function resolveBrowserRoslynCommit(
     logMessage(
       output,
       "Remote Repositories did not expose the web workspace revision; "
-      + "checking the GitHub pull request ref."
+      + "checking the GitHub workspace ref."
     );
   } catch (error) {
     logError(
@@ -344,21 +336,21 @@ async function resolveBrowserRoslynCommit(
   }
 
   try {
-    const detectedCommit = await detectGitHubPullRequestRevision(
+    const detectedCommit = await detectGitHubRevision(
       workspaceFolder.uri
     );
     if (detectedCommit !== undefined) {
       logMessage(
         output,
         `Detected Roslyn workspace commit ${detectedCommit} `
-        + "from the GitHub pull request ref."
+        + "from the GitHub workspace ref."
       );
       return detectedCommit;
     }
   } catch (error) {
     logError(
       output,
-      "Could not determine the web workspace revision from the GitHub pull request ref",
+      "Could not determine the web workspace revision from the GitHub workspace ref",
       error
     );
   }
@@ -377,22 +369,11 @@ async function resolveBrowserRoslynCommit(
     return normalizedRememberedCommit;
   }
 
-  const enteredCommit = await vscode.window.showInputBox({
-    title: "Roslyn Codewise index commit",
-    prompt: "Enter the full commit SHA checked out in this web workspace.",
-    placeHolder: "40-character Git commit SHA",
-    ignoreFocusOut: true,
-    validateInput: (value) => (
-      gitCommitPattern.test(value.trim().toLowerCase())
-        ? undefined
-        : "Enter a full 40-character hexadecimal Git commit SHA."
-    )
-  });
-  if (enteredCommit === undefined) {
+  const commit = await promptRoslynCommit();
+  if (commit === undefined) {
     return undefined;
   }
 
-  const commit = enteredCommit.trim().toLowerCase();
   await context.workspaceState.update(roslynCommitStateKey, commit);
   return commit;
 }
