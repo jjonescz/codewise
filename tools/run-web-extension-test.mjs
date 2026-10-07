@@ -3,7 +3,11 @@ import { createServer } from "node:net";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { runTests } from "@vscode/test-web";
-import { createIndexSchemaSql } from "../packages/index-core/dist/schema.js";
+import {
+  createIndexSchemaSql,
+  createSymbolGraphSchemaSql
+} from "../packages/index-core/dist/schema.js";
+import { exportRuntimeIndex } from "../packages/lsp-crawler/dist/index.js";
 
 const fixtureSource = [
   "public class Widget {}",
@@ -37,6 +41,7 @@ await mkdir(resolve(workspacePath, "src"), { recursive: true });
 await mkdir(resolve(workspacePath, ".vscode"), { recursive: true });
 await Promise.all([
   writeFile(resolve(workspacePath, "src", "Widget.cs"), fixtureSource, "utf8"),
+  writeFile(resolve(workspacePath, "src", "WidgetGeneric.cs"), fixtureSource, "utf8"),
   writeFile(
     resolve(workspacePath, ".vscode", "settings.json"),
     `${JSON.stringify({
@@ -47,7 +52,11 @@ await Promise.all([
 ]);
 const fixtureIndexPath = resolve(workspacePath, ".codewise", "index.db");
 await rm(fixtureIndexPath, { force: true });
-createFixtureIndex(fixtureIndexPath);
+const crawlIndexPath = resolve(workspacePath, ".codewise", "crawl.db");
+await rm(crawlIndexPath, { force: true });
+createFixtureIndex(crawlIndexPath);
+exportRuntimeIndex(crawlIndexPath, fixtureIndexPath);
+await rm(crawlIndexPath);
 
 const port = await findAvailablePort();
 await runTests({
@@ -133,5 +142,50 @@ function createFixtureIndex(path) {
     kind: "markdown",
     value: "```csharp\nclass Widget\n```\n\nA demo widget."
   }));
+  database.exec(`
+    INSERT INTO documents (
+      id, uri, relative_path, language_id, content_hash, position_encoding
+    ) VALUES (
+      2, 'file:///crawler/src/WidgetGeneric.cs', 'src/WidgetGeneric.cs',
+      'csharp', 'hash', 'utf-16'
+    );
+    INSERT INTO occurrences (
+      id, document_id, start_line, start_character, end_line, end_character,
+      start_key, end_key, discovery_source
+    )
+    SELECT id + 2, 2, start_line, start_character, end_line, end_character,
+           start_key, end_key, discovery_source
+    FROM occurrences WHERE document_id = 1;
+    INSERT INTO answer_sets (id, kind, content_hash)
+    SELECT id + 2, kind, content_hash || '-generic' FROM answer_sets WHERE id IN (1, 2);
+    INSERT INTO answer_locations (
+      answer_set_id, ordinal, uri, start_line, start_character, end_line, end_character
+    )
+    SELECT answer_set_id + 2, ordinal, 'file:///crawler/src/WidgetGeneric.cs',
+           start_line, start_character, end_line, end_character
+    FROM answer_locations WHERE answer_set_id IN (1, 2);
+    INSERT INTO occurrence_answers (
+      occurrence_id, kind, answer_set_id, status, attempt_count
+    )
+    SELECT occurrence_id + 2, kind, answer_set_id + 2, status, attempt_count
+    FROM occurrence_answers WHERE occurrence_id = 2;
+    INSERT INTO hover_results (
+      occurrence_id, status, contents_json,
+      start_line, start_character, end_line, end_character, attempt_count
+    )
+    SELECT occurrence_id + 2, status, contents_json,
+           start_line, start_character, end_line, end_character, attempt_count
+    FROM hover_results WHERE occurrence_id = 2;
+
+    ${createSymbolGraphSchemaSql}
+    INSERT INTO symbols (id, provider, provider_key, display_name)
+    VALUES (1, 'test', 'widget', 'class Widget');
+    INSERT INTO occurrence_symbols (occurrence_id, symbol_id, is_definition)
+    VALUES (1, 1, 1), (2, 1, 0);
+    INSERT INTO symbol_definitions (
+      symbol_id, ordinal, uri, start_line, start_character, end_line, end_character
+    ) VALUES (1, 0, 'file:///crawler/src/Widget.cs', 0, 13, 0, 19);
+    DELETE FROM hover_results WHERE occurrence_id = 2;
+  `);
   database.close();
 }

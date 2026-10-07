@@ -16,7 +16,20 @@ export async function run(): Promise<void> {
   );
   await extension.activate();
 
-  const sourceUri = vscode.Uri.joinPath(workspaceFolder.uri, "src", "Widget.cs");
+  await checkDocument(
+    workspaceFolder,
+    "Widget.cs",
+    new vscode.MarkdownString().appendText("class Widget").value
+  );
+  await checkDocument(workspaceFolder, "WidgetGeneric.cs", "class Widget");
+}
+
+async function checkDocument(
+  workspaceFolder: vscode.WorkspaceFolder,
+  name: string,
+  expectedSignature: string
+): Promise<void> {
+  const sourceUri = vscode.Uri.joinPath(workspaceFolder.uri, "src", name);
   const openedDocument = await vscode.workspace.openTextDocument(sourceUri);
   const document = await vscode.languages.setTextDocumentLanguage(
     openedDocument,
@@ -64,7 +77,10 @@ export async function run(): Promise<void> {
   const hoverText = hovers.flatMap((hover) => hover.contents).map((content) => (
     typeof content === "string" ? content : content.value
   )).join("\n");
-  assert(hoverText.includes("class Widget"), "Widget hover did not include its signature.");
+  assert(
+    hoverText.includes(expectedSignature),
+    `${name} hover did not include its signature: ${hoverText}`
+  );
 }
 
 function assert(condition: boolean, message: string): asserts condition {

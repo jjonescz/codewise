@@ -18,6 +18,11 @@ the extension requests permission to use a GitHub session with the `repo`
 scope. It verifies the bundle's commit, byte size, and SHA-256 from its manifest
 and caches the index by commit in extension global storage.
 
+New hosted artifacts contain a compact read-only runtime database. It shares
+file paths and excludes crawler-only identity and retry data while preserving
+navigation and hover answers. The extension also accepts older crawl-format
+artifacts and local indexes. A compact export cannot be used to resume indexing.
+
 Desktop VS Code obtains the Roslyn commit from local Git. On vscode.dev and
 github.dev, the extension first obtains the exact revision from the built-in
 Remote Repositories metadata API. If that is unavailable, it resolves the

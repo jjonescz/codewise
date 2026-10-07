@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
 import {
-  createReadStream,
   createWriteStream,
   mkdirSync,
   rmSync,
@@ -20,6 +18,8 @@ import {
   type CrawlSummary
 } from "@codewise/lsp-crawler";
 import { resolveIndexOutputPaths } from "./output-paths.js";
+import { hashFile } from "./file-hash.js";
+import { exportRuntimeBundle } from "./runtime-bundle.js";
 import {
   createSdkResolverEnvironment,
   parseInstalledSdks,
@@ -35,6 +35,7 @@ interface Options {
   readonly databasePath?: string;
   readonly concurrency: number;
   readonly roslynSymbolGraph: boolean;
+  readonly compact: boolean;
 }
 
 interface Manifest {
@@ -66,6 +67,7 @@ function usage(): string {
     "  --database <path>       Output database path",
     "  --concurrency <number>  Concurrent document crawls (default: 8)",
     "  --roslyn-symbol-graph   Use the experimental inverted Roslyn symbol graph",
+    "  --compact               Also export runtime/index.db and its verified manifest",
     "  --help                  Show this help"
   ].join("\n");
 }
@@ -75,6 +77,7 @@ function parseOptions(args: readonly string[]): Options {
   let databasePath: string | undefined;
   let concurrency = 8;
   let roslynSymbolGraph = false;
+  let compact = false;
 
   for (let index = 0; index < args.length; index++) {
     const argument = args[index]!;
@@ -99,6 +102,9 @@ function parseOptions(args: readonly string[]): Options {
       case "--roslyn-symbol-graph":
         roslynSymbolGraph = true;
         break;
+      case "--compact":
+        compact = true;
+        break;
       default:
         throw new Error(`Unknown argument: ${argument}\n\n${usage()}`);
     }
@@ -113,6 +119,7 @@ function parseOptions(args: readonly string[]): Options {
     workspaceRoot: resolve(workspaceRoot),
     concurrency,
     roslynSymbolGraph,
+    compact,
     ...(databasePath === undefined
       ? {}
       : { databasePath: resolve(databasePath) })
@@ -305,14 +312,16 @@ async function main(): Promise<void> {
   );
   printCrawlPerformance(summary);
   console.log(`Manifest: ${manifestPath}`);
-}
-
-async function hashFile(path: string): Promise<string> {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) {
-    hash.update(chunk);
+  if (options.compact) {
+    const exported = await exportRuntimeBundle(databasePath, manifest);
+    console.log(
+      `Runtime export: ${exported.sourceByteSize.toLocaleString()} -> `
+      + `${exported.byteSize.toLocaleString()} bytes `
+      + `(${(100 * (1 - exported.byteSize / exported.sourceByteSize)).toFixed(1)}% smaller).`
+    );
+    console.log(`Runtime index: ${exported.databasePath}`);
+    console.log(`Runtime manifest: ${exported.manifestPath}`);
   }
-  return hash.digest("hex");
 }
 
 function printCrawlPerformance(summary: CrawlSummary): void {

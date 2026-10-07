@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { CodeIndex } from "./code-index.js";
 import {
   createIndexSchemaSql,
+  createRuntimeIndexSchemaSql,
+  createRuntimeSymbolGraphSchemaSql,
   createSymbolGraphSchemaSql
 } from "./schema.js";
 import type { SqlDatabase, SqlRow, SqlValue } from "./types.js";
@@ -126,6 +128,38 @@ describe("CodeIndex", () => {
       true
     )).toHaveLength(2);
     index.close();
+  });
+
+  it.each([undefined, "2"])("rejects a runtime index with an invalid graph flag (%s)", (flag) => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      database.exec(createRuntimeIndexSchemaSql);
+      if (flag !== undefined) {
+        database.prepare("INSERT INTO metadata (key, value) VALUES ('symbol_graph', ?)")
+          .run(flag);
+      }
+      expect(() => new CodeIndex(new TestSqlDatabase(database)))
+        .toThrow("invalid symbol graph flag");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("requires graph tables when a runtime index declares a symbol graph", () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      database.exec(`
+        ${createRuntimeIndexSchemaSql}
+        INSERT INTO metadata (key, value) VALUES ('symbol_graph', '1');
+      `);
+      expect(() => new CodeIndex(new TestSqlDatabase(database)))
+        .toThrow("missing required table");
+      database.exec(createRuntimeSymbolGraphSchemaSql);
+      const index = new CodeIndex(new TestSqlDatabase(database));
+      expect(index.statistics.documentCount).toBe(0);
+    } finally {
+      database.close();
+    }
   });
 });
 

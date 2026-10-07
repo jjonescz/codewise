@@ -3,6 +3,7 @@ import type { SqlDatabase, SqlRow } from "./types.js";
 export const indexApplicationId = 0x43574958;
 export const indexSchemaVersion = 1;
 export const symbolGraphSchemaVersion = 2;
+export const runtimeIndexSchemaVersion = 3;
 
 export const createIndexSchemaSql = `
   PRAGMA application_id = ${indexApplicationId};
@@ -147,6 +148,91 @@ const symbolGraphTables = new Set([
   "symbols"
 ]);
 
+export const createRuntimeIndexSchemaSql = `
+  PRAGMA application_id = ${indexApplicationId};
+
+  CREATE TABLE metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  ) STRICT, WITHOUT ROWID;
+
+  CREATE TABLE documents (
+    id INTEGER PRIMARY KEY,
+    uri TEXT NOT NULL,
+    relative_path TEXT UNIQUE
+  ) STRICT;
+
+  CREATE TABLE occurrences (
+    id INTEGER PRIMARY KEY,
+    document_id INTEGER NOT NULL REFERENCES documents(id),
+    start_key INTEGER NOT NULL CHECK (start_key >= 0),
+    span_length INTEGER NOT NULL CHECK (span_length > 0),
+    end_key INTEGER GENERATED ALWAYS AS (start_key + span_length) VIRTUAL,
+    start_line INTEGER GENERATED ALWAYS AS (start_key >> 32) VIRTUAL,
+    start_character INTEGER GENERATED ALWAYS AS (start_key & 4294967295) VIRTUAL,
+    end_line INTEGER GENERATED ALWAYS AS (end_key >> 32) VIRTUAL,
+    end_character INTEGER GENERATED ALWAYS AS (end_key & 4294967295) VIRTUAL
+  ) STRICT;
+
+  CREATE TABLE answer_locations (
+    answer_set_id INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    document_id INTEGER NOT NULL REFERENCES documents(id),
+    start_line INTEGER NOT NULL CHECK (start_line >= 0),
+    start_character INTEGER NOT NULL CHECK (start_character >= 0),
+    end_line INTEGER NOT NULL CHECK (end_line >= 0),
+    end_character INTEGER NOT NULL CHECK (end_character >= 0),
+    PRIMARY KEY (answer_set_id, ordinal)
+  ) STRICT, WITHOUT ROWID;
+
+  CREATE TABLE occurrence_answers (
+    occurrence_id INTEGER NOT NULL REFERENCES occurrences(id),
+    kind TEXT NOT NULL CHECK (
+      kind IN ('declaration', 'definition', 'highlights', 'references')
+    ),
+    answer_set_id INTEGER,
+    status TEXT GENERATED ALWAYS AS ('complete') VIRTUAL,
+    PRIMARY KEY (occurrence_id, kind)
+  ) STRICT, WITHOUT ROWID;
+
+  CREATE TABLE hover_results (
+    occurrence_id INTEGER PRIMARY KEY REFERENCES occurrences(id),
+    contents_json TEXT,
+    start_line INTEGER,
+    start_character INTEGER,
+    end_line INTEGER,
+    end_character INTEGER,
+    status TEXT GENERATED ALWAYS AS ('complete') VIRTUAL
+  ) STRICT;
+
+  INSERT INTO metadata (key, value)
+  VALUES ('schema_version', '${runtimeIndexSchemaVersion}');
+`;
+
+export const createRuntimeSymbolGraphSchemaSql = `
+  CREATE TABLE symbols (
+    id INTEGER PRIMARY KEY,
+    display_name TEXT
+  ) STRICT;
+
+  CREATE TABLE occurrence_symbols (
+    occurrence_id INTEGER PRIMARY KEY REFERENCES occurrences(id),
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id),
+    is_definition INTEGER NOT NULL CHECK (is_definition IN (0, 1))
+  ) STRICT;
+
+  CREATE TABLE symbol_definitions (
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id),
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    document_id INTEGER NOT NULL REFERENCES documents(id),
+    start_line INTEGER NOT NULL CHECK (start_line >= 0),
+    start_character INTEGER NOT NULL CHECK (start_character >= 0),
+    end_line INTEGER NOT NULL CHECK (end_line >= 0),
+    end_character INTEGER NOT NULL CHECK (end_character >= 0),
+    PRIMARY KEY (symbol_id, ordinal)
+  ) STRICT, WITHOUT ROWID;
+`;
+
 export class CodeIndexValidationError extends Error {
   public constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -154,7 +240,9 @@ export class CodeIndexValidationError extends Error {
   }
 }
 
-export function validateIndexDatabase(database: SqlDatabase): void {
+export function validateIndexDatabase(
+  database: SqlDatabase
+): typeof indexSchemaVersion | typeof symbolGraphSchemaVersion | typeof runtimeIndexSchemaVersion {
   const applicationId = firstNumber(
     database.all("PRAGMA application_id"),
     "application_id"
@@ -171,15 +259,26 @@ export function validateIndexDatabase(database: SqlDatabase): void {
   if (
     version !== String(indexSchemaVersion)
     && version !== String(symbolGraphSchemaVersion)
+    && version !== String(runtimeIndexSchemaVersion)
   ) {
     throw new CodeIndexValidationError(
       `Unsupported Codewise index schema version ${String(version ?? "missing")}.`
     );
   }
-  const hasSymbolGraph = version === String(symbolGraphSchemaVersion);
+  const isRuntimeIndex = version === String(runtimeIndexSchemaVersion);
+  const graphFlag = isRuntimeIndex
+    ? database.all("SELECT value FROM metadata WHERE key = 'symbol_graph'")[0]?.["value"]
+    : undefined;
+  if (isRuntimeIndex && graphFlag !== "0" && graphFlag !== "1") {
+    throw new CodeIndexValidationError("The runtime index has an invalid symbol graph flag.");
+  }
+  const hasSymbolGraph = version === String(symbolGraphSchemaVersion) || graphFlag === "1";
   const expectedTables = hasSymbolGraph
     ? new Set([...baseTables, ...symbolGraphTables])
-    : baseTables;
+    : new Set(baseTables);
+  if (isRuntimeIndex) {
+    expectedTables.delete("answer_sets");
+  }
   const expectedIndexes = hasSymbolGraph
     ? new Set(["occurrences_by_position", "occurrence_symbols_by_symbol"])
     : new Set(["occurrences_by_position"]);
@@ -228,6 +327,9 @@ export function validateIndexDatabase(database: SqlDatabase): void {
       `The index is missing required table(s): ${missingTables.join(", ")}.`
     );
   }
+  return isRuntimeIndex
+    ? runtimeIndexSchemaVersion
+    : hasSymbolGraph ? symbolGraphSchemaVersion : indexSchemaVersion;
 }
 
 function firstNumber(rows: readonly SqlRow[], name: string): number | undefined {

@@ -19,3 +19,14 @@ export function resolveIndexOutputPaths(
     manifestPath: resolve(outputDirectory, "manifest.json")
   };
 }
+
+export function resolveRuntimeOutputPaths(databasePath: string): {
+  readonly databasePath: string;
+  readonly manifestPath: string;
+} {
+  const directory = resolve(dirname(databasePath), "runtime");
+  return {
+    databasePath: resolve(directory, "index.db"),
+    manifestPath: resolve(directory, "manifest.json")
+  };
+}

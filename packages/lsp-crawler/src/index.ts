@@ -43,3 +43,4 @@ export {
   type Position,
   type Range
 } from "./lsp-types.js";
+export { exportRuntimeIndex, type RuntimeIndexExport } from "./runtime-export.js";

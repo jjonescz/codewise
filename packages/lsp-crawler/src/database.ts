@@ -5,12 +5,11 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
 import {
   createIndexSchemaSql,
   createSymbolGraphSchemaSql,
+  runtimeIndexSchemaVersion,
   validateIndexDatabase,
-  type IndexStatistics,
-  type SqlDatabase,
-  type SqlRow,
-  type SqlValue
+  type IndexStatistics
 } from "@codewise/index-core";
+import { NodeSqlDatabase } from "./node-sql-database.js";
 import type { Hover, Location, PositionEncoding, Range } from "./lsp-types.js";
 
 export type LocationAnswerKind =
@@ -122,13 +121,28 @@ export class CrawlerDatabase {
       enableForeignKeyConstraints: true,
       timeout: 5_000
     });
-    this.#database.exec(`
-      PRAGMA trusted_schema = OFF;
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = NORMAL;
-      ${createIndexSchemaSql}
-    `);
-    validateIndexDatabase(new NodeSqlDatabase(this.#database, false));
+    try {
+      if (this.#database.prepare(`
+        SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'metadata'
+      `).get() !== undefined) {
+        const version = this.#database.prepare(
+          "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).get()?.["value"];
+        if (version === String(runtimeIndexSchemaVersion)) {
+          throw new Error("A compact runtime index cannot be resumed; use the original crawl database.");
+        }
+      }
+      this.#database.exec(`
+        PRAGMA trusted_schema = OFF;
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        ${createIndexSchemaSql}
+      `);
+      validateIndexDatabase(new NodeSqlDatabase(this.#database, false));
+    } catch (error) {
+      this.#database.close();
+      throw error;
+    }
   }
 
   public close(): void {
@@ -1008,28 +1022,6 @@ export class CrawlerDatabase {
       )
     `).get() as unknown as { readonly count: number } | undefined;
     return row?.count ?? 0;
-  }
-}
-
-class NodeSqlDatabase implements SqlDatabase {
-  public constructor(
-    private readonly database: DatabaseSync,
-    private readonly ownsDatabase: boolean
-  ) {}
-
-  public all(
-    sql: string,
-    parameters: readonly SqlValue[] = []
-  ): readonly SqlRow[] {
-    return this.database.prepare(sql).all(
-      ...parameters
-    ) as unknown as readonly SqlRow[];
-  }
-
-  public close(): void {
-    if (this.ownsDatabase) {
-      this.database.close();
-    }
   }
 }
 

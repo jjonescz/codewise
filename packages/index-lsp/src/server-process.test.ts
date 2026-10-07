@@ -11,6 +11,7 @@ import {
 } from "vscode-jsonrpc/node";
 import { afterEach, describe, expect, it } from "vitest";
 import { createIndexSchemaSql } from "@codewise/index-core";
+import { exportRuntimeIndex } from "../../lsp-crawler/src/runtime-export.js";
 
 interface RunningServer {
   readonly child: ChildProcessWithoutNullStreams;
@@ -36,8 +37,13 @@ afterEach(async () => {
 });
 
 describe("Node index language server", () => {
-  it("serves definition, references, and hover over stdio", async () => {
-    const indexPath = await createFixtureIndex();
+  it.each(["crawl", "compact"])("serves definition, references, and hover over stdio (%s)", async (format) => {
+    let indexPath = await createFixtureIndex();
+    if (format === "compact") {
+      const output = `${indexPath}.runtime.db`;
+      exportRuntimeIndex(indexPath, output);
+      indexPath = output;
+    }
     const server = startServer(indexPath);
     const initializeResult = await initialize(server.connection) as {
       capabilities: Record<string, unknown>;

@@ -199,6 +199,38 @@ language-specific batch indexer. By default, the database, log, and manifest are
 written below the workspace's `artifacts\.codewise\` directory. Passing
 `--database` places the log and manifest beside the selected database.
 
+### Compact runtime indexes
+
+The crawler database retains stable provider identities, uniqueness constraints,
+source hashes, and retry state for resumable indexing. Consumers do not need
+these fields. Add `--compact` to either Roslyn indexing command to also write
+`runtime/index.db` and `runtime/manifest.json` beside the crawl outputs. The
+runtime manifest hashes and describes the compact database; the original
+database and manifest are unchanged.
+
+To export an existing crawl without running the language server again:
+
+```powershell
+npm run export:runtime -- C:\path\to\crawl.db C:\path\to\runtime.db
+```
+
+This command exports only the database, not a hosted-artifact manifest. It
+prints the measured uncompressed size reduction and does not modify the source.
+Point `codewise.indexPath` at the output to use it locally.
+
+Runtime schema version 3 stores file URIs once, uses numeric path IDs for
+locations, and stores occurrence starts and span lengths instead of duplicate
+coordinates. It omits provider keys, discovery metadata, error/retry rows and
+ingestion-only uniqueness indexes. Serving indexes, completed answers, hovers,
+symbol display text, external locations, ordering, and statistics are preserved.
+Runtime exports cannot be resumed as crawler databases. Desktop and web servers
+continue to accept original schema versions 1 and 2.
+
+Hosted indexing publishes the compact database and its matching manifest, not
+the crawl database or server log. CI console output retains server diagnostics.
+Raw and compressed savings differ; exporting alone does not guarantee that a
+full Roslyn artifact fits the download cap or available browser WASM memory.
+
 ## Run the standalone language server
 
 Any LSP client can launch the server over stdio after `npm run build`:

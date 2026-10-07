@@ -1,5 +1,6 @@
 import {
   CodeIndexValidationError,
+  runtimeIndexSchemaVersion,
   validateIndexDatabase
 } from "./schema.js";
 import type {
@@ -15,10 +16,11 @@ import type {
 export class CodeIndex {
   readonly #database: SqlDatabase;
   readonly #hasSymbolGraph: boolean;
+  readonly #isRuntimeIndex: boolean;
 
   public constructor(database: SqlDatabase) {
     this.#database = database;
-    validateIndexDatabase(database);
+    this.#isRuntimeIndex = validateIndexDatabase(database) === runtimeIndexSchemaVersion;
     this.#hasSymbolGraph = database.all(`
       SELECT 1
       FROM sqlite_schema
@@ -28,7 +30,10 @@ export class CodeIndex {
 
   public get statistics(): IndexStatistics {
     return {
-      documentCount: this.#count("documents"),
+      documentCount: this.#count(
+        "documents",
+        this.#isRuntimeIndex ? "relative_path IS NOT NULL" : undefined
+      ),
       occurrenceCount: this.#count("occurrences"),
       completedAnswerCount: this.#count(
         "occurrence_answers",
@@ -155,7 +160,7 @@ export class CodeIndex {
     return this.#database.all(`
       SELECT
         target.relative_path,
-        definition.uri,
+        ${this.#isRuntimeIndex ? "target.uri" : "definition.uri"} AS uri,
         definition.start_line,
         definition.start_character,
         definition.end_line,
@@ -163,7 +168,11 @@ export class CodeIndex {
       FROM occurrence_symbols AS edge
       JOIN symbol_definitions AS definition
         ON definition.symbol_id = edge.symbol_id
-      LEFT JOIN documents AS target ON target.uri = definition.uri
+      LEFT JOIN documents AS target ON ${
+        this.#isRuntimeIndex
+          ? "target.id = definition.document_id"
+          : "target.uri = definition.uri"
+      }
       WHERE edge.occurrence_id = ?
       ORDER BY definition.ordinal
     `, [occurrenceId]).map(locationFromRow);
@@ -199,7 +208,7 @@ export class CodeIndex {
         UNION
         SELECT
           document.relative_path,
-          definition.uri,
+          ${this.#isRuntimeIndex ? "document.uri" : "definition.uri"} AS uri,
           definition.start_line,
           definition.start_character,
           definition.end_line,
@@ -207,7 +216,11 @@ export class CodeIndex {
         FROM source_symbol
         JOIN symbol_definitions AS definition
           ON definition.symbol_id = source_symbol.symbol_id
-        LEFT JOIN documents AS document ON document.uri = definition.uri
+        LEFT JOIN documents AS document ON ${
+          this.#isRuntimeIndex
+            ? "document.id = definition.document_id"
+            : "document.uri = definition.uri"
+        }
         WHERE ? = 1
       )
       ORDER BY
@@ -333,7 +346,7 @@ export class CodeIndex {
     return this.#database.all(`
       SELECT
         target.relative_path,
-        location.uri,
+        ${this.#isRuntimeIndex ? "target.uri" : "location.uri"} AS uri,
         location.start_line,
         location.start_character,
         location.end_line,
@@ -341,7 +354,11 @@ export class CodeIndex {
       FROM occurrence_answers AS answer
       JOIN answer_locations AS location
         ON location.answer_set_id = answer.answer_set_id
-      LEFT JOIN documents AS target ON target.uri = location.uri
+      LEFT JOIN documents AS target ON ${
+        this.#isRuntimeIndex
+          ? "target.id = location.document_id"
+          : "target.uri = location.uri"
+      }
       WHERE answer.occurrence_id = ?
         AND answer.kind = ?
         AND answer.status = 'complete'
