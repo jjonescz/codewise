@@ -140,6 +140,11 @@ export interface SymbolGraphSummary {
   readonly metrics?: Readonly<Record<string, number>>;
 }
 
+interface SymbolGraphPopulation {
+  readonly summary: SymbolGraphSummary;
+  readonly processedDocumentUris: ReadonlySet<string>;
+}
+
 class SymbolGraphError extends Error {
   public constructor(
     message: string,
@@ -170,6 +175,7 @@ interface PreparedDocument {
   readonly recordId: number;
   readonly occurrenceCount: number;
   readonly contentLength: number;
+  readonly contentHash: string;
 }
 
 interface DocumentWork {
@@ -266,7 +272,8 @@ export async function crawlWorkspace(
                   config,
                   document,
                   failures,
-                  counters
+                  counters,
+                  onLog
                 )
           };
         } catch (error) {
@@ -318,15 +325,17 @@ export async function crawlWorkspace(
     ));
     const symbolGraphStartedAt = performance.now();
     let symbolGraph: SymbolGraphSummary | undefined;
+    let population: SymbolGraphPopulation | undefined;
     let symbolGraphMilliseconds: number;
     try {
-      symbolGraph = await populateSymbolGraph(
+      population = await populateSymbolGraph(
         client,
         database,
         providerWork,
         provider,
         onLog
       );
+      symbolGraph = population?.summary;
       symbolGraphMilliseconds = performance.now() - symbolGraphStartedAt;
     } catch (error) {
       symbolGraphMilliseconds = performance.now() - symbolGraphStartedAt;
@@ -337,7 +346,13 @@ export async function crawlWorkspace(
       }
       throw error;
     }
-    if (provider !== undefined && symbolGraph?.status === "used") {
+    if (provider !== undefined && population?.summary.status === "used") {
+      onLog(
+        `[crawler] [info] Capturing semantic tokens for `
+        + `${population.processedDocumentUris.size} loaded document(s); `
+        + `skipping ${providerWork.length - population.processedDocumentUris.size} `
+        + `document(s) outside the symbol graph snapshot.`
+      );
       await processWork(providerWork, false);
       await processWork(standardWork, true);
     } else {
@@ -392,14 +407,17 @@ export async function crawlWorkspace(
                 failures,
                 counters
               );
-            } else if (documentWork.prepared !== undefined) {
+            } else if (
+              documentWork.prepared !== undefined
+              && population?.processedDocumentUris.has(documentWork.prepared.uri)
+            ) {
               await captureProviderSemanticTokens(
-                client, database, documentWork.prepared, failures, counters
+                client, database, documentWork.prepared, failures, counters, onLog
               );
             }
           } catch (error) {
             const failure = requestFailure(
-              "occurrence probing",
+              probeOccurrences ? "occurrence probing" : "semantic token capture",
               documentWork.document.relativePath,
               error
             );
@@ -467,7 +485,8 @@ async function prepareProviderDocument(
     uri,
     recordId: record.id,
     occurrenceCount: 0,
-    contentLength: Buffer.byteLength(content)
+    contentLength: Buffer.byteLength(content),
+    contentHash: record.contentHash
   };
 }
 
@@ -477,7 +496,7 @@ async function populateSymbolGraph(
   work: readonly DocumentWork[],
   provider: SymbolGraphProvider | undefined,
   onLog: (message: string) => void
-): Promise<SymbolGraphSummary | undefined> {
+): Promise<SymbolGraphPopulation | undefined> {
   if (provider === undefined) {
     return undefined;
   }
@@ -505,6 +524,7 @@ async function populateSymbolGraph(
   );
   const startedAt = performance.now();
   const providerKeys = new Set<string>();
+  const processedDocumentUris = new Set<string>();
   let populatedOccurrenceCount = 0;
   let processedDocumentCount = 0;
   let missingDocumentCount = 0;
@@ -539,6 +559,13 @@ async function populateSymbolGraph(
       let chunkOccurrenceCount = 0;
       let committed = false;
       try {
+        for (const uri of result.processedDocumentUris) {
+          if (!documentByUri.has(uri)) {
+            throw new Error(
+              `Symbol graph provider ${provider.name} processed unknown document ${uri}.`
+            );
+          }
+        }
         const chunkKeys = new Set<string>();
         const symbols = result.symbols.map((symbol): SymbolGraphAppendInput => {
           if (
@@ -574,6 +601,9 @@ async function populateSymbolGraph(
         populatedOccurrenceCount += chunkOccurrenceCount;
         for (const key of chunkKeys) {
           providerKeys.add(key);
+        }
+        for (const uri of result.processedDocumentUris) {
+          processedDocumentUris.add(uri);
         }
         committed = true;
       } finally {
@@ -611,7 +641,7 @@ async function populateSymbolGraph(
       + `(${missingDocumentCount} missing, ${failedDocumentCount} failed) in `
       + `${Math.round(summary.elapsedMilliseconds)}ms.`
     );
-    return summary;
+    return { summary, processedDocumentUris };
   } catch (error) {
     const cleanupStartedAt = performance.now();
     let cause = error;
@@ -670,7 +700,8 @@ async function discoverDocumentCandidates(
   config: CrawlerConfig,
   document: WorkspaceDocument,
   failures: Error[],
-  counters: CrawlCounters
+  counters: CrawlCounters,
+  onLog: (message: string) => void
 ): Promise<PreparedDocument> {
   const source = await readFile(document.absolutePath, "utf8");
   const content = normalizeSemanticText(source);
@@ -703,7 +734,8 @@ async function discoverDocumentCandidates(
       content,
       mapper,
       failures,
-      counters
+      counters,
+      onLog
     );
     for (const candidate of candidates) {
       database.upsertOccurrence({
@@ -723,7 +755,8 @@ async function discoverDocumentCandidates(
       uri,
       recordId: record.id,
       occurrenceCount: database.listOccurrences(record.id).length,
-      contentLength: Buffer.byteLength(content)
+      contentLength: Buffer.byteLength(content),
+      contentHash: record.contentHash
     };
   } finally {
     client.notify("textDocument/didClose", { textDocument: { uri } });
@@ -773,29 +806,20 @@ async function captureProviderSemanticTokens(
   database: CrawlerDatabase,
   prepared: PreparedDocument,
   failures: Error[],
-  counters: CrawlCounters
+  counters: CrawlCounters,
+  onLog: (message: string) => void
 ): Promise<void> {
-  const content = normalizeSemanticText(
-    await readFile(prepared.document.absolutePath, "utf8")
-  );
-  client.notify("textDocument/didOpen", {
-    textDocument: {
-      uri: prepared.uri,
-      languageId: prepared.document.languageId,
-      version: 1,
-      text: content
-    }
-  });
-  try {
-    await captureSemanticTokenCandidates(
-      client, database, prepared.recordId, prepared.uri,
-      prepared.document.languageId, content,
-      new TextCoordinateMapper(content, client.positionEncoding),
-      failures, counters
-    );
-  } finally {
-    client.notify("textDocument/didClose", { textDocument: { uri: prepared.uri } });
+  const source = await readFile(prepared.document.absolutePath, "utf8");
+  if (createHash("sha256").update(source).digest("hex") !== prepared.contentHash) {
+    throw new Error("Document changed while indexing the symbol graph snapshot.");
   }
+  const content = normalizeSemanticText(source);
+  await captureSemanticTokenCandidates(
+    client, database, prepared.recordId, prepared.uri,
+    prepared.document.languageId, content,
+    new TextCoordinateMapper(content, client.positionEncoding),
+    failures, counters, onLog, false
+  );
 }
 
 async function discoverCandidates(
@@ -808,7 +832,8 @@ async function discoverCandidates(
   content: string,
   mapper: TextCoordinateMapper,
   failures: Error[],
-  counters: CrawlCounters
+  counters: CrawlCounters,
+  onLog: (message: string) => void
 ): Promise<readonly Candidate[]> {
   const candidates = new Map<string, Candidate>();
   const add = (candidate: Candidate): void => {
@@ -828,7 +853,7 @@ async function discoverCandidates(
 
   (await captureSemanticTokenCandidates(
     client, database, documentId, uri, languageId, content, mapper,
-    failures, counters
+    failures, counters, onLog
   )).forEach(add);
   if (client.supports("textDocument/documentSymbol")) {
     try {
@@ -864,7 +889,9 @@ async function captureSemanticTokenCandidates(
   content: string,
   mapper: TextCoordinateMapper,
   failures: Error[],
-  counters: CrawlCounters
+  counters: CrawlCounters,
+  onLog: (message: string) => void,
+  discoverNavigation = true
 ): Promise<readonly Candidate[]> {
   const registration = client.semanticTokensRegistration(languageId, uri);
   if (registration === undefined || registration === false) {
@@ -872,13 +899,15 @@ async function captureSemanticTokenCandidates(
   }
   try {
     return await semanticTokenCandidates(
-      client, database, documentId, content, uri, mapper, registration
+      client, database, documentId, content, uri, mapper, registration, discoverNavigation
     );
   } catch (error) {
     if (isUnsupportedDocumentFailure(error)) {
       counters.recoveredRequestFailures++;
     } else {
-      failures.push(requestFailure("semantic tokens", uri, error));
+      const failure = requestFailure("semantic tokens", uri, error);
+      failures.push(failure);
+      onLog(`[crawler] [error] ${failure.message}`);
     }
     return [];
   }
@@ -891,7 +920,8 @@ async function semanticTokenCandidates(
   content: string,
   uri: string,
   mapper: TextCoordinateMapper,
-  registration: unknown
+  registration: unknown,
+  discoverNavigation: boolean
 ): Promise<readonly Candidate[]> {
   const legend = semanticTokensLegend(registration);
   const provider = isObject(registration) ? registration : {};
@@ -969,7 +999,7 @@ async function semanticTokenCandidates(
     previousCharacter = start.character;
     previousEnd = end.character;
     const semanticTokenType = legend.tokenTypes[tokenType]!;
-    if (length > 0 && isNavigableSemanticToken(semanticTokenType)) {
+    if (discoverNavigation && length > 0 && isNavigableSemanticToken(semanticTokenType)) {
       result.push({
         range: {
           start: { line, character },

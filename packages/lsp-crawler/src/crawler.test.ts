@@ -13,6 +13,99 @@ import type { CrawlerConfig } from "./config.js";
 import { CrawlError, crawlWorkspace } from "./crawler.js";
 
 describe("crawlWorkspace", () => {
+  it.each([false, true])("captures only closed graph snapshots (source changed=%s)", async (sourceChanged) => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-graph-token-scope-"));
+    const path = join(directory, "index.db");
+    const logPath = join(directory, "server.log");
+    try {
+      await Promise.all([
+        writeFile(join(directory, "loaded.toy"), "let value = 1;\nprint(value);\n"),
+        writeFile(join(directory, "keywords.toy"), "let"),
+        writeFile(join(directory, "unloaded.toy"), "not in the solution")
+      ]);
+      const messages: string[] = [];
+      const crawl = crawlWorkspace({
+        workspaceRoot: directory,
+        server: {
+          command: process.execPath,
+          args: [
+            resolve(import.meta.dirname, "../test/fake-lsp-server.mjs"),
+            logPath, "--graph-token-scope"
+          ],
+          cwd: directory, environment: {}, requestResponses: {}
+        },
+        documents: [{ languageId: "toy", extensions: [".toy"] }],
+        concurrency: 2, requestTimeoutMilliseconds: 5_000,
+        workspaceLoadTimeoutMilliseconds: 5_000, settleMilliseconds: 0,
+        lexicalFallback: false
+      }, path, {
+        onLog: (message) => messages.push(message),
+        symbolGraphProvider: {
+          name: "scope-provider", languageIds: new Set(["toy"]),
+          async populateSymbolGraph(_client, documents, onChunk) {
+            const loaded = documents.find((document) => document.uri.endsWith("/loaded.toy"))!;
+            const keywords = documents.find((document) => document.uri.endsWith("/keywords.toy"))!;
+            const unloaded = documents.find((document) => document.uri.endsWith("/unloaded.toy"))!;
+            if (sourceChanged) {
+              await writeFile(join(directory, "loaded.toy"), "let other = 2;\n");
+            }
+            onChunk({
+              symbols: [{
+                providerKey: "value", displayName: "value", definitions: [],
+                occurrences: [{
+                  uri: loaded.uri, isDefinition: true,
+                  range: { start: { line: 0, character: 4 }, end: { line: 0, character: 9 } }
+                }]
+              }],
+              processedDocumentUris: [loaded.uri],
+              missingDocumentUris: [unloaded.uri], failures: []
+            });
+            onChunk({
+              symbols: [], processedDocumentUris: [keywords.uri],
+              missingDocumentUris: [], failures: []
+            });
+          }
+        }
+      });
+      if (sourceChanged) {
+        await expect(crawl).rejects.toMatchObject({
+          summary: { documentsCompleted: 3, requestFailures: 1 }
+        });
+        expect(messages).toContainEqual(expect.stringContaining(
+          "Document changed while indexing the symbol graph snapshot."
+        ));
+      } else {
+        expect(await crawl).toMatchObject({
+          documentsCompleted: 3, requestFailures: 0,
+          database: { documentCount: 3, occurrenceCount: 1 },
+          symbolGraph: { metrics: { processedDocumentCount: 2, missingDocumentCount: 1 } }
+        });
+      }
+      const counts = await methodCounts(logPath);
+      expect(counts.get("textDocument/semanticTokens/full")).toBe(sourceChanged ? 1 : 2);
+      for (const method of [
+        "textDocument/didOpen", "textDocument/didClose", "textDocument/documentSymbol",
+        "textDocument/references", "textDocument/definition", "textDocument/hover"
+      ]) {
+        expect(counts.get(method) ?? 0, method).toBe(0);
+      }
+      const index = openIndex(path);
+      try {
+        expect(index.semanticTokens("loaded.toy")?.data)
+          .toEqual(sourceChanged ? undefined : [0, 4, 5, 0, 1, 1, 0, 5, 1, 0, 0, 6, 5, 0, 0]);
+        expect(index.semanticTokens("keywords.toy")?.data).toEqual([0, 0, 3, 2, 0]);
+        expect(index.semanticTokens("unloaded.toy")).toBeUndefined();
+      } finally {
+        index.close();
+      }
+      expect(messages).toContainEqual(expect.stringContaining(
+        "Capturing semantic tokens for 2 loaded document(s); skipping 1 document(s)"
+      ));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["--utf-8", "--utf-32", "--range-tokens"])(
     "captures UTF-16 highlighting from upstream %s tokens",
     async (flag) => {
@@ -59,6 +152,7 @@ describe("crawlWorkspace", () => {
       const path = join(directory, "index.db");
       try {
         await writeFile(join(directory, "sample.toy"), "let value = 1;\nprint(value);\n");
+        const messages: string[] = [];
         const crawl = crawlWorkspace({
           workspaceRoot: directory,
           server: {
@@ -73,12 +167,15 @@ describe("crawlWorkspace", () => {
           concurrency: 1, requestTimeoutMilliseconds: 5_000,
           workspaceLoadTimeoutMilliseconds: 5_000, settleMilliseconds: 0,
           lexicalFallback: false
-        }, path);
+        }, path, { onLog: (message) => messages.push(message) });
         if (flag === "--invalid-tokens") {
           await expect(crawl).rejects.toBeInstanceOf(CrawlError);
           await expect(crawl).rejects.toMatchObject({
             summary: { requestFailures: 1 }
           });
+          expect(messages).toContainEqual(expect.stringMatching(
+            /\[crawler\] \[error\] semantic tokens failed for .*sample\.toy: Invalid semantic token/u
+          ));
         } else {
           expect((await crawl).requestFailures).toBe(0);
         }

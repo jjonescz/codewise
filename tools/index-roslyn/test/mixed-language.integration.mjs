@@ -102,7 +102,9 @@ public static class Caller
     public static int RunGeneric() => VbApi.Echo<int>(item: 2);
     public static int RunBox(VbBox<int> box) => box.BoxEcho(item: 3);
 }
-`
+`,
+  "Loose/Unloaded.cs": "public class UnloadedCSharp {}\n",
+  "Loose/Unloaded.vb": "Public Class UnloadedVisualBasic\nEnd Class\n"
 };
 
 describe("Roslyn mixed-language symbol graph", () => {
@@ -174,13 +176,13 @@ describe("Roslyn mixed-language symbol graph", () => {
   });
 
   it("indexes VB locals and connects C#/VB definitions and references", () => {
-    expect(manifest.statistics.documentCount).toBe(3);
+    expect(manifest.statistics.documentCount).toBe(5);
     expect(manifest.recoveredRequestFailures).toBe(0);
     expect(manifest.symbolGraph).toMatchObject({
       status: "used",
       metrics: {
         processedDocumentCount: 3,
-        missingDocumentCount: 0,
+        missingDocumentCount: 2,
         failedDocumentCount: 0
       }
     });
@@ -212,12 +214,14 @@ describe("Roslyn mixed-language symbol graph", () => {
       .toBeDefined();
   });
 
-  it("captures C# and VB highlighting with one semantic-token request per document", () => {
+  it("captures C# and VB highlighting with one semantic-token request per loaded document", () => {
     const requests = manifest.requestStatistics.filter(
       (entry) => entry.method.startsWith("textDocument/semanticTokens/")
     );
     expect(requests.reduce((count, entry) => count + entry.requestCount, 0))
-      .toBe(manifest.statistics.documentCount);
+      .toBe(manifest.symbolGraph.metrics.processedDocumentCount);
+    expect(index.semanticTokens("Loose/Unloaded.cs")).toBeUndefined();
+    expect(index.semanticTokens("Loose/Unloaded.vb")).toBeUndefined();
     for (const request of requests) {
       expect(["textDocument/semanticTokens/full", "textDocument/semanticTokens/range"])
         .toContain(request.method);

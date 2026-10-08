@@ -130,7 +130,7 @@ jobs:
         run: |
           set -euo pipefail
           test -s tools/roslyn-index-extension/bin/Release/net10.0/Codewise.RoslynExtension.dll
-          node tools/index-roslyn/dist/cli.js \
+          /usr/bin/time --verbose node tools/index-roslyn/dist/cli.js \
             --roslyn-symbol-graph \
             --compact \
             --workspace-root "$GITHUB_WORKSPACE/roslyn" \

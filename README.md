@@ -114,8 +114,14 @@ The symbol graph is authoritative for C# and Visual Basic: no per-occurrence
 reference, definition, highlight, or hover LSP requests are issued for those documents.
 Unresolved occurrences remain unresolved, source definitions come from the
 extension, and symbol display text provides a lightweight plaintext hover.
-Highlighting still uses one standard semantic-token request per supported
-document, without per-token navigation requests.
+Highlighting uses one standard semantic-token request per supported document
+successfully processed by the graph provider, including documents without any
+symbol occurrences. Requests read the already-loaded snapshot without
+`didOpen`/`didClose` notifications or unused navigation-candidate allocations.
+Files absent from the loaded solution are not opened or classified, avoiding
+ad-hoc project creation for test resources and other excluded sources.
+Changing a source file during graph indexing fails the crawl rather than
+associating snapshot tokens with a different source hash.
 Extension activation or dispatch failure fails the crawl instead of silently
 starting the potentially multi-day generic fallback. Razor and other languages
 retain standard LSP crawling until they have authoritative providers of their own.
@@ -429,6 +435,10 @@ other languages retain standard LSP crawling. The workflow checks that the
 extension assembly exists before crawling, and the indexer also validates the
 VB language-service assemblies, to prevent a missing build from silently
 falling back to standard LSP requests.
+The crawl command reports GNU `time` resource statistics, including maximum
+resident memory, to help diagnose process termination without a crawler error.
+Semantic-token request failures are logged immediately rather than only when
+the crawl finishes.
 
 Roslyn source and builds are untrusted. The index job has no repository
 permissions or secrets and fetches both repositories anonymously. The trusted
