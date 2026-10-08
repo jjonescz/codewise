@@ -1,19 +1,18 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-07T15:17:11.251Z",
+  "updatedAt": "2026-10-08T13:10:39.684Z",
   "entries": {
-    "13b4f255bdb00b9ef629b08d7be58db1650bdbb9": {
+    "67ebca858d83d631030cb1b17d97ae96f7c6a5e8": {
       "candidate": {
-        "sha": "13b4f255bdb00b9ef629b08d7be58db1650bdbb9",
+        "sha": "67ebca858d83d631030cb1b17d97ae96f7c6a5e8",
         "sourceKind": "main",
         "sourceRef": "refs/heads/main",
         "sourceLabel": "main"
       },
+      "status": "queued",
       "attempts": 1,
-      "lastAttemptAt": "2026-10-07T15:17:11.251Z",
-      "lastConclusion": "success",
-      "status": "success",
-      "artifactExpiresAt": "2027-01-05T15:17:11.251Z"
+      "lastAttemptAt": "2026-10-08T13:10:39.684Z",
+      "lastConclusion": "queued"
     }
   }
 }
