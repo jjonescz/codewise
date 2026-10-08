@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-08T15:39:03.957Z",
+  "updatedAt": "2026-10-08T16:03:11.808Z",
   "entries": {
     "67ebca858d83d631030cb1b17d97ae96f7c6a5e8": {
       "candidate": {
@@ -22,10 +22,10 @@
         "sourceLabel": "PR #85962",
         "pullRequestNumber": 85962
       },
-      "status": "queued",
       "attempts": 1,
-      "lastAttemptAt": "2026-10-08T15:24:39.337Z",
-      "lastConclusion": "queued"
+      "lastAttemptAt": "2026-10-08T16:03:11.808Z",
+      "lastConclusion": "failure",
+      "status": "failed"
     }
   }
 }
