@@ -6,6 +6,11 @@ const maximumArtifactBytes = 512 * 1024 * 1024;
 export type ArtifactLogger = (message: string) => void;
 export type ArtifactOperation = "lookup" | "download";
 
+export interface ArtifactDownloadProgress {
+  readonly downloadedBytes: number;
+  readonly totalBytes: number | undefined;
+}
+
 export class GitHubArtifactHttpError extends Error {
   public readonly operation: ArtifactOperation;
   public readonly status: number;
@@ -47,7 +52,8 @@ export async function downloadRoslynArtifact(
   commitOrArtifact: string | RoslynArtifact,
   accessToken: string,
   logger?: ArtifactLogger,
-  fetcher: typeof fetch = fetch
+  fetcher: typeof fetch = fetch,
+  onProgress?: (progress: ArtifactDownloadProgress) => void
 ): Promise<Uint8Array> {
   const artifact = typeof commitOrArtifact === "string"
     ? await findRoslynArtifact(commitOrArtifact, accessToken, logger, fetcher)
@@ -80,7 +86,7 @@ export async function downloadRoslynArtifact(
     );
   }
 
-  const bytes = await readResponseBytes(response, maximumArtifactBytes);
+  const bytes = await readResponseBytes(response, maximumArtifactBytes, onProgress);
   logger?.(`Downloaded ${bytes.byteLength} artifact bytes.`);
   return bytes;
 }
@@ -223,17 +229,21 @@ function createHeaders(accessToken: string): HeadersInit {
 
 async function readResponseBytes(
   response: Response,
-  maximumBytes: number
+  maximumBytes: number,
+  onProgress?: (progress: ArtifactDownloadProgress) => void
 ): Promise<Uint8Array> {
   const contentLength = response.headers.get("content-length");
-  if (contentLength !== null) {
-    const parsedLength = Number.parseInt(contentLength, 10);
-    if (Number.isFinite(parsedLength) && parsedLength > maximumBytes) {
-      throw new Error(
-        `The GitHub artifact exceeds the ${maximumBytes}-byte download limit.`
-      );
-    }
+  const parsedLength = contentLength !== null && /^[0-9]+$/u.test(contentLength)
+    ? Number(contentLength)
+    : Number.NaN;
+  if (parsedLength > maximumBytes) {
+    throw new Error(
+      `The GitHub artifact exceeds the ${maximumBytes}-byte download limit.`
+    );
   }
+  const totalBytes = Number.isSafeInteger(parsedLength) && parsedLength > 0
+    ? parsedLength
+    : undefined;
 
   if (response.body === null) {
     throw new Error("GitHub returned an artifact response without a body.");
@@ -241,24 +251,26 @@ async function readResponseBytes(
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
+  let downloadedBytes = 0;
+  onProgress?.({ downloadedBytes, totalBytes });
   while (true) {
     const result = await reader.read();
     if (result.done) {
       break;
     }
 
-    totalBytes += result.value.byteLength;
-    if (totalBytes > maximumBytes) {
+    downloadedBytes += result.value.byteLength;
+    if (downloadedBytes > maximumBytes) {
       await reader.cancel();
       throw new Error(
         `The GitHub artifact exceeds the ${maximumBytes}-byte download limit.`
       );
     }
     chunks.push(result.value);
+    onProgress?.({ downloadedBytes, totalBytes });
   }
 
-  const bytes = new Uint8Array(totalBytes);
+  const bytes = new Uint8Array(downloadedBytes);
   let offset = 0;
   for (const chunk of chunks) {
     bytes.set(chunk, offset);

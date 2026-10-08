@@ -106,11 +106,28 @@ export async function resolveDownloadedRoslynIndex(
           return { commit, verifiedIndex: undefined };
         }
       }
-      progress.report({ message: `Downloading index for ${commit.slice(0, 12)}...` });
+      const downloadMessage = `Downloading index for ${commit.slice(0, 12)}`;
+      progress.report({ message: `${downloadMessage}...` });
+      let reportedPercentage = 0;
       const bytes = await downloadRoslynArtifact(
         artifact,
         session.accessToken,
-        logger
+        logger,
+        undefined,
+        ({ downloadedBytes, totalBytes }) => {
+          const downloadedSize = (downloadedBytes / (1024 * 1024)).toFixed(1);
+          if (totalBytes === undefined) {
+            progress.report({ message: `${downloadMessage}: ${downloadedSize} MiB` });
+            return;
+          }
+          const totalSize = (totalBytes / (1024 * 1024)).toFixed(1);
+          const percentage = Math.min(100, Math.floor(100 * downloadedBytes / totalBytes));
+          progress.report({
+            message: `${downloadMessage}: ${downloadedSize} / ${totalSize} MiB (${percentage}%)`,
+            increment: percentage - reportedPercentage
+          });
+          reportedPercentage = percentage;
+        }
       );
       progress.report({ message: "Extracting and verifying index..." });
       const verifiedIndex = await extractVerifiedRoslynIndex(bytes, commit);

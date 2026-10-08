@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   showInformationMessage: vi.fn(),
   showErrorMessage: vi.fn(),
   showInputBox: vi.fn(),
+  report: vi.fn<(update: { message?: string; increment?: number }) => void>(),
   registerCommand: vi.fn<
     (command: string, callback: () => Promise<void>) => { dispose(): void }
   >(),
@@ -76,8 +77,10 @@ vi.mock("vscode", () => {
       showInputBox: mocks.showInputBox,
       withProgress: async (
         _options: unknown,
-        callback: (progress: { report(update: unknown): void }) => Promise<unknown>
-      ) => callback({ report: () => {} })
+        callback: (
+          progress: vscode.Progress<{ message?: string; increment?: number }>
+        ) => Promise<unknown>
+      ) => callback({ report: mocks.report })
     }
   };
 });
@@ -156,6 +159,99 @@ beforeEach(() => {
 });
 
 describe("resolveDownloadedRoslynIndex", () => {
+  it("shows download sizes and incremental percentages in the notification", async () => {
+    vi.mocked(findRoslynArtifact).mockResolvedValue(artifact);
+    const mebibyte = 1024 * 1024;
+    vi.mocked(downloadRoslynArtifact).mockImplementation(
+      async (_artifact, _token, _logger, _fetcher, onProgress) => {
+        for (const downloadedBytes of [0, mebibyte, 1.5 * mebibyte, 4 * mebibyte]) {
+          onProgress?.({ downloadedBytes, totalBytes: 4 * mebibyte });
+        }
+        return new Uint8Array([1, 2, 3]);
+      }
+    );
+
+    await resolveDownloadedRoslynIndex(
+      context, workspaceFolder, output, async () => workspaceCommit
+    );
+
+    const message = `Downloading index for ${workspaceCommit.slice(0, 12)}`;
+    expect(mocks.report.mock.calls.map(([update]) => update)).toEqual([
+      { message: "Authenticating with GitHub..." },
+      { message: "Finding workflow artifact..." },
+      { message: `${message}...` },
+      { message: `${message}: 0.0 / 4.0 MiB (0%)`, increment: 0 },
+      { message: `${message}: 1.0 / 4.0 MiB (25%)`, increment: 25 },
+      { message: `${message}: 1.5 / 4.0 MiB (37%)`, increment: 12 },
+      { message: `${message}: 4.0 / 4.0 MiB (100%)`, increment: 63 },
+      { message: "Extracting and verifying index..." }
+    ]);
+  });
+
+  it("shows downloaded bytes with indeterminate progress when the total is unknown", async () => {
+    vi.mocked(downloadRoslynArtifact).mockImplementation(
+      async (_artifact, _token, _logger, _fetcher, onProgress) => {
+        onProgress?.({ downloadedBytes: 0, totalBytes: undefined });
+        onProgress?.({ downloadedBytes: 1.5 * 1024 * 1024, totalBytes: undefined });
+        return new Uint8Array([1, 2, 3]);
+      }
+    );
+
+    await resolveDownloadedRoslynIndex(
+      context, workspaceFolder, output, async () => workspaceCommit
+    );
+
+    const message = `Downloading index for ${indexedCommit.slice(0, 12)}`;
+    expect(mocks.report.mock.calls.map(([update]) => update)).toEqual([
+      { message: "Authenticating with GitHub..." },
+      { message: "Finding workflow artifact..." },
+      { message: "Finding the latest indexed commit in branch history..." },
+      { message: `${message}...` },
+      { message: `${message}: 0.0 MiB` },
+      { message: `${message}: 1.5 MiB` },
+      { message: "Extracting and verifying index..." }
+    ]);
+  });
+
+  it("caps download progress at 100 percent if the reported total is too small", async () => {
+    const mebibyte = 1024 * 1024;
+    vi.mocked(downloadRoslynArtifact).mockImplementation(
+      async (_artifact, _token, _logger, _fetcher, onProgress) => {
+        onProgress?.({ downloadedBytes: mebibyte, totalBytes: mebibyte });
+        onProgress?.({ downloadedBytes: 2 * mebibyte, totalBytes: mebibyte });
+        return new Uint8Array([1, 2, 3]);
+      }
+    );
+
+    await resolveDownloadedRoslynIndex(
+      context, workspaceFolder, output, async () => workspaceCommit
+    );
+
+    expect(mocks.report.mock.calls
+      .map(([update]) => update.increment)
+      .filter((increment) => increment !== undefined)).toEqual([100, 0]);
+  });
+
+  it("propagates download errors without extracting or caching an index", async () => {
+    vi.mocked(downloadRoslynArtifact).mockImplementation(
+      async (_artifact, _token, _logger, _fetcher, onProgress) => {
+        onProgress?.({ downloadedBytes: 1024 * 1024, totalBytes: 4 * 1024 * 1024 });
+        throw new Error("Download connection lost");
+      }
+    );
+
+    await expect(resolveDownloadedRoslynIndex(
+      context, workspaceFolder, output, async () => workspaceCommit
+    )).rejects.toThrow("Download connection lost");
+
+    expect(extractVerifiedRoslynIndex).not.toHaveBeenCalled();
+    expect(mocks.fs.writeFile).not.toHaveBeenCalled();
+    expect(mocks.report).not.toHaveBeenCalledWith({
+      message: "Extracting and verifying index..."
+    });
+    expect(mocks.showInformationMessage).not.toHaveBeenCalled();
+  });
+
   it("prefers an exact retained artifact without discovering fallback commits", async () => {
     vi.mocked(findRoslynArtifact).mockResolvedValue(artifact);
 
@@ -208,6 +304,7 @@ describe("resolveDownloadedRoslynIndex", () => {
 
     expect(result?.toString()).toBe(cachePath(workspaceCommit, "index.db"));
     expect(mocks.getSession).not.toHaveBeenCalled();
+    expect(mocks.report).not.toHaveBeenCalled();
     expect(findRoslynArtifact).not.toHaveBeenCalled();
     expect(mocks.showWarningMessage).not.toHaveBeenCalled();
   });
@@ -234,7 +331,7 @@ describe("resolveDownloadedRoslynIndex", () => {
     );
 
     expect(downloadRoslynArtifact).toHaveBeenCalledWith(
-      artifact, "token", expect.any(Function)
+      artifact, "token", expect.any(Function), undefined, expect.any(Function)
     );
     expect(extractVerifiedRoslynIndex).toHaveBeenCalledWith(
       new Uint8Array([1, 2, 3]), indexedCommit

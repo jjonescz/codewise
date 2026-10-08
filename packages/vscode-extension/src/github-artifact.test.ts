@@ -3,6 +3,7 @@ import {
   downloadRoslynArtifact,
   findLatestRoslynArtifact,
   GitHubArtifactHttpError,
+  type ArtifactDownloadProgress,
   type RoslynArtifact
 } from "./github-artifact.js";
 
@@ -81,6 +82,155 @@ describe("downloadRoslynArtifact", () => {
         new GitHubArtifactHttpError("lookup", 403, "Forbidden")
       );
     expect(requestCount).toBe(1);
+  });
+
+  it("reports cumulative bytes while the artifact is still streaming", async () => {
+    const chunks = [new Uint8Array([1, 2]), new Uint8Array([3, 4, 5])];
+    let chunkIndex = 0;
+    const progress: ArtifactDownloadProgress[] = [];
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks[chunkIndex++];
+        if (chunk === undefined) {
+          controller.close();
+        } else {
+          controller.enqueue(chunk);
+        }
+      }
+    });
+    const fetcher: typeof fetch = async () => new Response(body, {
+      headers: { "Content-Length": "5" }
+    });
+    let completed = false;
+
+    const bytes = await downloadRoslynArtifact(
+      artifact(42, commit),
+      "token",
+      undefined,
+      fetcher,
+      (update) => {
+        expect(completed).toBe(false);
+        progress.push(update);
+      }
+    ).then((result) => {
+      completed = true;
+      return result;
+    });
+
+    expect(bytes).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    expect(progress).toEqual([
+      { downloadedBytes: 0, totalBytes: 5 },
+      { downloadedBytes: 2, totalBytes: 5 },
+      { downloadedBytes: 5, totalBytes: 5 }
+    ]);
+  });
+
+  it.each([undefined, "", "0", "-1", "invalid", "3bytes", "3.5", "0x3"])(
+    "reports bytes without a total for Content-Length %j",
+    async (contentLength) => {
+      const onProgress = vi.fn();
+      const headers = new Headers();
+      if (contentLength !== undefined) {
+        headers.set("Content-Length", contentLength);
+      }
+      const fetcher: typeof fetch = async () => new Response(
+        new Uint8Array([1, 2, 3]), { headers }
+      );
+
+      await expect(downloadRoslynArtifact(
+        artifact(42, commit), "token", undefined, fetcher, onProgress
+      )).resolves.toEqual(new Uint8Array([1, 2, 3]));
+
+      expect(onProgress.mock.calls).toEqual([
+        [{ downloadedBytes: 0, totalBytes: undefined }],
+        [{ downloadedBytes: 3, totalBytes: undefined }]
+      ]);
+    }
+  );
+
+  it("does not report progress for an unsuccessful download", async () => {
+    const onProgress = vi.fn();
+    const fetcher: typeof fetch = async () => new Response(undefined, {
+      status: 403,
+      statusText: "Forbidden"
+    });
+
+    await expect(downloadRoslynArtifact(
+      artifact(42, commit), "token", undefined, fetcher, onProgress
+    )).rejects.toEqual(new GitHubArtifactHttpError("download", 403, "Forbidden"));
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing response body without reporting progress", async () => {
+    const onProgress = vi.fn();
+    const fetcher: typeof fetch = async () => new Response(null);
+
+    await expect(downloadRoslynArtifact(
+      artifact(42, commit), "token", undefined, fetcher, onProgress
+    )).rejects.toThrow("GitHub returned an artifact response without a body.");
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized Content-Length before reporting progress", async () => {
+    const onProgress = vi.fn();
+    const maximumBytes = 512 * 1024 * 1024;
+    const fetcher: typeof fetch = async () => new Response(new Uint8Array([1]), {
+      headers: { "Content-Length": String(maximumBytes + 1) }
+    });
+
+    await expect(downloadRoslynArtifact(
+      artifact(42, commit), "token", undefined, fetcher, onProgress
+    )).rejects.toThrow(`The GitHub artifact exceeds the ${maximumBytes}-byte download limit.`);
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it("cancels an oversized stream without reporting the rejected chunk", async () => {
+    const onProgress = vi.fn();
+    const cancel = vi.fn();
+    const maximumBytes = 512 * 1024 * 1024;
+    const chunk = new Uint8Array(1024 * 1024);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(chunk);
+      },
+      cancel
+    });
+    const fetcher: typeof fetch = async () => new Response(body);
+
+    await expect(downloadRoslynArtifact(
+      artifact(42, commit), "token", undefined, fetcher, onProgress
+    )).rejects.toThrow(`The GitHub artifact exceeds the ${maximumBytes}-byte download limit.`);
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(onProgress).toHaveBeenCalledTimes(513);
+    expect(onProgress).toHaveBeenLastCalledWith({
+      downloadedBytes: maximumBytes,
+      totalBytes: undefined
+    });
+  });
+
+  it("propagates stream failures without reporting completion", async () => {
+    const onProgress = vi.fn();
+    const failure = new Error("Download connection lost");
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(failure);
+      }
+    });
+    const fetcher: typeof fetch = async () => new Response(body, {
+      headers: { "Content-Length": "3" }
+    });
+
+    await expect(downloadRoslynArtifact(
+      artifact(42, commit), "token", undefined, fetcher, onProgress
+    )).rejects.toBe(failure);
+
+    expect(onProgress.mock.calls).toEqual([
+      [{ downloadedBytes: 0, totalBytes: 3 }]
+    ]);
   });
 });
 
