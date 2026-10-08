@@ -2,11 +2,14 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { runTests } from "@vscode/test-web";
 import {
   createIndexSchemaSql,
+  createSemanticTokensSchemaSql,
   createSymbolGraphSchemaSql
 } from "../packages/index-core/dist/schema.js";
+import { encodeSemanticTokens } from "../packages/index-core/dist/index.js";
 import { exportRuntimeIndex } from "../packages/lsp-crawler/dist/index.js";
 
 const fixtureSource = [
@@ -187,5 +190,20 @@ function createFixtureIndex(path) {
     ) VALUES (1, 0, 'file:///crawler/src/Widget.cs', 0, 13, 0, 19);
     DELETE FROM hover_results WHERE occurrence_id = 2;
   `);
+  const legend = { tokenTypes: ["class"], tokenModifiers: ["declaration"] };
+  database.exec(createSemanticTokensSchemaSql);
+  database.prepare("INSERT INTO metadata (key, value) VALUES ('semantic_tokens_legend', ?)")
+    .run(JSON.stringify(legend));
+  const tokens = database.prepare(`
+    INSERT INTO document_semantic_tokens (document_id, content_hash, data)
+    VALUES (?, ?, ?)
+  `);
+  for (const id of [1, 2]) {
+    tokens.run(
+      id,
+      createHash("sha256").update(fixtureSource).digest("hex"),
+      encodeSemanticTokens([0, 13, 6, 0, 1, 3, 8, 6, 0, 0], legend)
+    );
+  }
   database.close();
 }

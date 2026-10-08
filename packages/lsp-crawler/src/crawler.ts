@@ -5,6 +5,11 @@ import { extname, join, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import {
+  normalizeSemanticText,
+  parseSemanticTokensLegend,
+  validateSemanticTokens
+} from "@codewise/index-core";
+import {
   LspProcessClient,
   LspResponseError,
   type LspRequestStatistics
@@ -387,6 +392,10 @@ export async function crawlWorkspace(
                 failures,
                 counters
               );
+            } else if (documentWork.prepared !== undefined) {
+              await captureProviderSemanticTokens(
+                client, database, documentWork.prepared, failures, counters
+              );
             }
           } catch (error) {
             const failure = requestFailure(
@@ -663,14 +672,15 @@ async function discoverDocumentCandidates(
   failures: Error[],
   counters: CrawlCounters
 ): Promise<PreparedDocument> {
-  const content = await readFile(document.absolutePath, "utf8");
+  const source = await readFile(document.absolutePath, "utf8");
+  const content = normalizeSemanticText(source);
   const uri = pathToFileURL(document.absolutePath).href;
   const mapper = new TextCoordinateMapper(content, client.positionEncoding);
   const record = database.upsertDocument({
     uri,
     relativePath: document.relativePath,
     languageId: document.languageId,
-    contentHash: createHash("sha256").update(content).digest("hex"),
+    contentHash: createHash("sha256").update(source).digest("hex"),
     positionEncoding: client.positionEncoding
   });
 
@@ -685,6 +695,8 @@ async function discoverDocumentCandidates(
   try {
     const candidates = await discoverCandidates(
       client,
+      database,
+      record.id,
       config,
       uri,
       document.languageId,
@@ -725,7 +737,9 @@ async function probeDocument(
   failures: Error[],
   counters: CrawlCounters
 ): Promise<void> {
-  const content = await readFile(prepared.document.absolutePath, "utf8");
+  const content = normalizeSemanticText(
+    await readFile(prepared.document.absolutePath, "utf8")
+  );
   client.notify("textDocument/didOpen", {
     textDocument: {
       uri: prepared.uri,
@@ -754,8 +768,40 @@ async function probeDocument(
   }
 }
 
+async function captureProviderSemanticTokens(
+  client: LspProcessClient,
+  database: CrawlerDatabase,
+  prepared: PreparedDocument,
+  failures: Error[],
+  counters: CrawlCounters
+): Promise<void> {
+  const content = normalizeSemanticText(
+    await readFile(prepared.document.absolutePath, "utf8")
+  );
+  client.notify("textDocument/didOpen", {
+    textDocument: {
+      uri: prepared.uri,
+      languageId: prepared.document.languageId,
+      version: 1,
+      text: content
+    }
+  });
+  try {
+    await captureSemanticTokenCandidates(
+      client, database, prepared.recordId, prepared.uri,
+      prepared.document.languageId, content,
+      new TextCoordinateMapper(content, client.positionEncoding),
+      failures, counters
+    );
+  } finally {
+    client.notify("textDocument/didClose", { textDocument: { uri: prepared.uri } });
+  }
+}
+
 async function discoverCandidates(
   client: LspProcessClient,
+  database: CrawlerDatabase,
+  documentId: number,
   config: CrawlerConfig,
   uri: string,
   languageId: string,
@@ -780,26 +826,10 @@ async function discoverCandidates(
     }
   };
 
-  const semanticRegistration = client.semanticTokensRegistration(
-    languageId,
-    uri
-  );
-  if (semanticRegistration !== undefined && semanticRegistration !== false) {
-    try {
-      (await semanticTokenCandidates(
-        client,
-        uri,
-        mapper,
-        semanticRegistration
-      )).forEach(add);
-    } catch (error) {
-      if (isUnsupportedDocumentFailure(error)) {
-        counters.recoveredRequestFailures++;
-      } else {
-        failures.push(requestFailure("semantic tokens", uri, error));
-      }
-    }
-  }
+  (await captureSemanticTokenCandidates(
+    client, database, documentId, uri, languageId, content, mapper,
+    failures, counters
+  )).forEach(add);
   if (client.supports("textDocument/documentSymbol")) {
     try {
       const value = await requestWithRetry<unknown>(
@@ -825,8 +855,40 @@ async function discoverCandidates(
   ));
 }
 
+async function captureSemanticTokenCandidates(
+  client: LspProcessClient,
+  database: CrawlerDatabase,
+  documentId: number,
+  uri: string,
+  languageId: string,
+  content: string,
+  mapper: TextCoordinateMapper,
+  failures: Error[],
+  counters: CrawlCounters
+): Promise<readonly Candidate[]> {
+  const registration = client.semanticTokensRegistration(languageId, uri);
+  if (registration === undefined || registration === false) {
+    return [];
+  }
+  try {
+    return await semanticTokenCandidates(
+      client, database, documentId, content, uri, mapper, registration
+    );
+  } catch (error) {
+    if (isUnsupportedDocumentFailure(error)) {
+      counters.recoveredRequestFailures++;
+    } else {
+      failures.push(requestFailure("semantic tokens", uri, error));
+    }
+    return [];
+  }
+}
+
 async function semanticTokenCandidates(
   client: LspProcessClient,
+  database: CrawlerDatabase,
+  documentId: number,
+  content: string,
   uri: string,
   mapper: TextCoordinateMapper,
   registration: unknown
@@ -871,15 +933,20 @@ async function semanticTokenCandidates(
     }
   }
   if (value === null) {
-    return [];
+    value = { data: [] };
   }
   if (!isSemanticTokens(value) || value.data.length % 5 !== 0) {
     throw new Error("Language server returned invalid semantic token data.");
   }
+  validateSemanticTokens(value.data, legend);
 
   const result: Candidate[] = [];
+  const highlighting: number[] = [];
   let line = 0;
   let character = 0;
+  let previousLine = 0;
+  let previousCharacter = 0;
+  let previousEnd = 0;
   for (let index = 0; index < value.data.length; index += 5) {
     const deltaLine = value.data[index]!;
     const deltaCharacter = value.data[index + 1]!;
@@ -888,7 +955,20 @@ async function semanticTokenCandidates(
     const modifiers = value.data[index + 4]!;
     line += deltaLine;
     character = deltaLine === 0 ? character + deltaCharacter : deltaCharacter;
-    const semanticTokenType = legend.tokenTypes[tokenType] ?? `token-${tokenType}`;
+    const start = mapper.toUtf16Position({ line, character });
+    const end = mapper.toUtf16Position({ line, character: character + length });
+    if (line === previousLine && start.character < previousEnd) {
+      throw new Error("Language server returned overlapping semantic tokens.");
+    }
+    highlighting.push(
+      line - previousLine,
+      line === previousLine ? start.character - previousCharacter : start.character,
+      end.character - start.character, tokenType, modifiers
+    );
+    previousLine = line;
+    previousCharacter = start.character;
+    previousEnd = end.character;
+    const semanticTokenType = legend.tokenTypes[tokenType]!;
     if (length > 0 && isNavigableSemanticToken(semanticTokenType)) {
       result.push({
         range: {
@@ -901,25 +981,19 @@ async function semanticTokenCandidates(
       });
     }
   }
+  database.saveSemanticTokens(
+    documentId,
+    createHash("sha256").update(normalizeSemanticText(content)).digest("hex"),
+    highlighting,
+    legend
+  );
   return result;
 }
 
 function semanticTokensLegend(registration: unknown): SemanticTokensLegend {
-  if (
-    isObject(registration)
-    && isObject(registration["legend"])
-    && Array.isArray(registration["legend"]["tokenTypes"])
-    && registration["legend"]["tokenTypes"].every(
-      (item) => typeof item === "string"
-    )
-    && Array.isArray(registration["legend"]["tokenModifiers"])
-    && registration["legend"]["tokenModifiers"].every(
-      (item) => typeof item === "string"
-    )
-  ) {
-    return registration["legend"] as unknown as SemanticTokensLegend;
-  }
-  return { tokenTypes: [], tokenModifiers: [] };
+  return parseSemanticTokensLegend(
+    isObject(registration) ? registration["legend"] : undefined
+  );
 }
 
 function documentSymbolCandidates(
@@ -1292,6 +1366,35 @@ class TextCoordinateMapper {
 
   public get end(): Position {
     return this.positionAtUtf16Offset(this.#content.length);
+  }
+
+  public toUtf16Position(position: Position): Position {
+    const lineStart = this.#lineStarts[position.line];
+    if (lineStart === undefined) {
+      throw new Error("Semantic token line is outside the document.");
+    }
+    const line = this.#content.slice(
+      lineStart, this.#lineStarts[position.line + 1] ?? this.#content.length
+    ).replace(/\r?\n$/u, "");
+    if (this.#encoding === "utf-16") {
+      if (position.character > line.length) {
+        throw new Error("Semantic token character is outside its line.");
+      }
+      return position;
+    }
+    let encoded = 0;
+    let utf16 = 0;
+    for (const character of line) {
+      if (encoded === position.character) {
+        return { line: position.line, character: utf16 };
+      }
+      encoded += this.#encoding === "utf-8" ? Buffer.byteLength(character) : 1;
+      utf16 += character.length;
+    }
+    if (encoded === position.character) {
+      return { line: position.line, character: utf16 };
+    }
+    throw new Error("Semantic token character is outside a character boundary.");
   }
 
   public positionAtUtf16Offset(offset: number): Position {

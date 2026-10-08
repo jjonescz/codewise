@@ -4,9 +4,57 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import { CrawlerDatabase, type SymbolGraphAppendInput } from "./database.js";
+import { CodeIndex } from "@codewise/index-core";
+import { NodeSqlDatabase } from "./node-sql-database.js";
 import type { Location } from "./lsp-types.js";
 
 describe("CrawlerDatabase", () => {
+  it("merges legends across documents and resumes, and invalidates dependent classifications", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-semantic-"));
+    const path = join(directory, "index.db");
+    let database = new CrawlerDatabase(path);
+    const input = {
+      uri: "file:///workspace/first.cs", relativePath: "first.cs",
+      languageId: "csharp", contentHash: "a".repeat(64), positionEncoding: "utf-16" as const
+    };
+    const secondInput = { ...input, uri: "file:///workspace/second.cs", relativePath: "second.cs" };
+    try {
+      const first = database.upsertDocument(input);
+      const second = database.upsertDocument(secondInput);
+      database.saveSemanticTokens(first.id, input.contentHash, [0, 0, 5, 0, 1], {
+        tokenTypes: ["class"], tokenModifiers: ["declaration"]
+      });
+      database.close();
+      database = new CrawlerDatabase(path);
+      database.saveSemanticTokens(second.id, input.contentHash, [0, 0, 5, 0, 1, 1, 0, 5, 1, 2], {
+        tokenTypes: ["variable", "class"], tokenModifiers: ["static", "declaration"]
+      });
+      const index = new CodeIndex(new NodeSqlDatabase(new DatabaseSync(path, { readOnly: true }), true));
+      try {
+        expect(index.semanticTokensLegend).toEqual({
+          tokenTypes: ["class", "variable"], tokenModifiers: ["declaration", "static"]
+        });
+        expect(index.semanticTokens("first.cs")?.data).toEqual([0, 0, 5, 0, 1]);
+        expect(index.semanticTokens("second.cs")?.data).toEqual([0, 0, 5, 1, 2, 1, 0, 5, 0, 1]);
+        database.synchronizeDocuments([input, secondInput]);
+        expect(index.semanticTokens("first.cs")).toBeDefined();
+        database.synchronizeDocuments([input, { ...secondInput, contentHash: "b".repeat(64) }]);
+        expect(index.semanticTokens("first.cs")).toBeUndefined();
+        expect(index.semanticTokens("second.cs")).toBeUndefined();
+        database.saveSemanticTokens(first.id, input.contentHash, [0, 0, 5, 0, 1], {
+          tokenTypes: ["class"], tokenModifiers: ["declaration"]
+        });
+        database.synchronizeDocuments([]);
+        expect(index.semanticTokens("first.cs")).toBeUndefined();
+      } finally {
+        index.close();
+      }
+    } finally {
+      database.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["append", "replace"])(
     "merges large repeated definition sets with only new-location writes (%s)",
     async (mode) => {

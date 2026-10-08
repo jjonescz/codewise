@@ -16,6 +16,7 @@ import type {
   IndexLocation,
   IndexPosition
 } from "@codewise/index-core";
+import { normalizeSemanticText } from "@codewise/index-core";
 import type { IndexSource } from "./index-source.js";
 import { WorkspaceUriMapper } from "./workspace-uri-mapper.js";
 
@@ -28,11 +29,18 @@ interface ServerState {
   readonly mapper: WorkspaceUriMapper;
 }
 
+interface OpenDocument {
+  readonly text: string;
+  hash?: Promise<string>;
+  mismatchReported?: boolean;
+}
+
 export function registerIndexLanguageServer(
   connection: Connection,
   indexSource: IndexSource
 ): void {
   let state: ServerState | undefined;
+  const openDocuments = new Map<string, OpenDocument>();
 
   connection.onInitialize(async (params: InitializeParams): Promise<InitializeResult> => {
     try {
@@ -58,7 +66,19 @@ export function registerIndexLanguageServer(
           definitionProvider: true,
           hoverProvider: true,
           referencesProvider: true,
-          textDocumentSync: TextDocumentSyncKind.None,
+          textDocumentSync: loaded.index.semanticTokensLegend === undefined
+            ? TextDocumentSyncKind.None
+            : { openClose: true, change: TextDocumentSyncKind.Full },
+          ...(loaded.index.semanticTokensLegend === undefined ? {} : {
+            semanticTokensProvider: {
+              legend: {
+                tokenTypes: [...loaded.index.semanticTokensLegend.tokenTypes],
+                tokenModifiers: [...loaded.index.semanticTokensLegend.tokenModifiers]
+              },
+              full: true,
+              range: false
+            }
+          }),
           positionEncoding: PositionEncodingKind.UTF16
         },
         serverInfo: {
@@ -76,6 +96,53 @@ export function registerIndexLanguageServer(
   connection.onShutdown(() => {
     state?.index.close();
     state = undefined;
+    openDocuments.clear();
+  });
+
+  connection.onDidOpenTextDocument((params) => {
+    openDocuments.set(params.textDocument.uri, { text: params.textDocument.text });
+  });
+  connection.onDidChangeTextDocument((params) => {
+    for (const change of params.contentChanges) {
+      if ("range" in change) {
+        openDocuments.delete(params.textDocument.uri);
+        connection.console.error("Codewise semantic highlighting requires full document synchronization.");
+        return;
+      }
+      openDocuments.set(params.textDocument.uri, { text: change.text });
+    }
+  });
+  connection.onDidCloseTextDocument((params) => {
+    openDocuments.delete(params.textDocument.uri);
+  });
+
+  connection.languages.semanticTokens.on(async (params) => {
+    const current = requireState(state);
+    const uri = params.textDocument.uri;
+    const relativePath = current.mapper.toRelativePath(uri);
+    const document = openDocuments.get(uri);
+    if (relativePath === undefined || document === undefined) {
+      return null;
+    }
+    const tokens = current.index.semanticTokens(relativePath);
+    if (tokens === undefined) {
+      return null;
+    }
+    document.hash ??= hashDocument(document.text);
+    const hash = await document.hash;
+    if (openDocuments.get(uri) !== document) {
+      return { data: [] };
+    }
+    if (hash !== tokens.contentHash) {
+      if (!document.mismatchReported) {
+        connection.console.info(
+          `Semantic highlighting disabled for ${relativePath}: the document differs from the indexed snapshot.`
+        );
+        document.mismatchReported = true;
+      }
+      return { data: [] };
+    }
+    return { data: [...tokens.data] };
   });
 
   connection.onDefinition((params) => {
@@ -123,6 +190,15 @@ export function registerIndexLanguageServer(
           ...(hover.range === undefined ? {} : { range: hover.range })
         };
   });
+}
+
+async function hashDocument(text: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256", new TextEncoder().encode(normalizeSemanticText(text))
+  );
+  return Array.from(new Uint8Array(digest), (value) => (
+    value.toString(16).padStart(2, "0")
+  )).join("");
 }
 
 function parseInitializationOptions(value: unknown): IndexInitializationOptions {

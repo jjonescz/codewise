@@ -7,6 +7,7 @@ const browserSafeFiles = [
   "packages/index-core/src/code-index.ts",
   "packages/index-core/src/index.ts",
   "packages/index-core/src/schema.ts",
+  "packages/index-core/src/semantic-tokens.ts",
   "packages/index-core/src/types.ts",
   "packages/index-lsp/src/index-source.ts",
   "packages/index-lsp/src/server.ts",

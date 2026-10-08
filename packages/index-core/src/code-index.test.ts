@@ -3,10 +3,17 @@ import { describe, expect, it } from "vitest";
 import { CodeIndex } from "./code-index.js";
 import {
   createIndexSchemaSql,
+  createSemanticTokensSchemaSql,
   createRuntimeIndexSchemaSql,
   createRuntimeSymbolGraphSchemaSql,
   createSymbolGraphSchemaSql
 } from "./schema.js";
+import {
+  decodeSemanticTokens,
+  encodeSemanticTokens,
+  normalizeSemanticText,
+  parseSemanticTokensLegend
+} from "./semantic-tokens.js";
 import type { SqlDatabase, SqlRow, SqlValue } from "./types.js";
 
 describe("CodeIndex", () => {
@@ -122,12 +129,79 @@ describe("CodeIndex", () => {
   it("accepts schema version one indexes without symbol graph tables", () => {
     const database = createFixtureDatabase();
     const index = new CodeIndex(new TestSqlDatabase(database));
+    expect(index.semanticTokensLegend).toBeUndefined();
+    expect(index.semanticTokens("src/Widget.cs")).toBeUndefined();
     expect(index.references(
       "src/Widget.cs",
       { line: 3, character: 13 },
       true
     )).toHaveLength(2);
     index.close();
+  });
+
+  it("reads portable document semantic tokens with their legend and hash", () => {
+    const database = createFixtureDatabase();
+    const legend = { tokenTypes: ["class", "keyword"], tokenModifiers: ["declaration"] };
+    const data = [0, 0, 6, 1, 0, 0, 13, 6, 0, 1, 3, 8, 6, 0, 0];
+    const hash = "a".repeat(64);
+    database.exec(createSemanticTokensSchemaSql);
+    database.prepare("INSERT INTO metadata (key, value) VALUES ('semantic_tokens_legend', ?)")
+      .run(JSON.stringify(legend));
+    database.prepare(`
+      INSERT INTO document_semantic_tokens (document_id, content_hash, data)
+      VALUES (1, ?, ?)
+    `).run(hash, encodeSemanticTokens(data, legend));
+    const index = new CodeIndex(new TestSqlDatabase(database));
+    try {
+      expect(index.semanticTokensLegend).toEqual(legend);
+      expect(index.semanticTokens("src\\Widget.cs")).toEqual({ contentHash: hash, data });
+      expect(index.semanticTokens("missing.cs")).toBeUndefined();
+      database.prepare("UPDATE document_semantic_tokens SET data = ?")
+        .run(new Uint8Array(20).fill(255));
+      expect(() => index.semanticTokens("src/Widget.cs")).toThrow("Invalid semantic token data");
+    } finally {
+      index.close();
+    }
+  });
+
+  it("requires the declared semantic token table and a valid legend", () => {
+    const database = createFixtureDatabase();
+    try {
+      database.exec("INSERT INTO metadata (key, value) VALUES ('semantic_tokens_version', '1')");
+      expect(() => new CodeIndex(new TestSqlDatabase(database))).toThrow("missing required table");
+      database.exec(createSemanticTokensSchemaSql);
+      expect(() => new CodeIndex(new TestSqlDatabase(database))).toThrow("missing its semantic token legend");
+      database.exec(`
+        INSERT INTO metadata (key, value) VALUES ('semantic_tokens_legend', 'invalid');
+      `);
+      expect(() => new CodeIndex(new TestSqlDatabase(database))).toThrow("legend JSON");
+      database.exec("UPDATE metadata SET value = '999' WHERE key = 'semantic_tokens_version'");
+      expect(() => new CodeIndex(new TestSqlDatabase(database))).toThrow("Unsupported semantic token format");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("encodes token integers little-endian and validates payloads", () => {
+    const legend = { tokenTypes: ["variable"], tokenModifiers: ["readonly"] };
+    const data = [0, 256, 5, 0, 1];
+    const bytes = encodeSemanticTokens(data, legend);
+    expect([...bytes.slice(4, 8)]).toEqual([0, 1, 0, 0]);
+    const offsetBytes = new Uint8Array(bytes.length + 4);
+    offsetBytes.set(bytes, 4);
+    expect(decodeSemanticTokens(offsetBytes.subarray(4), legend)).toEqual(data);
+    expect(() => decodeSemanticTokens(new Uint8Array(1), legend)).toThrow("payload size");
+    for (const invalid of [
+      [0], [0, -1, 5, 0, 0], [0, 0, 0, 0, 0],
+      [0, 0, 5, 1, 0], [0, 0, 5, 0, 2], [0, 0, 5, 0, 2 ** 32]
+    ]) {
+      expect(() => encodeSemanticTokens(invalid, legend)).toThrow("Invalid semantic token");
+    }
+    expect(() => parseSemanticTokensLegend({
+      tokenTypes: ["class", "class"], tokenModifiers: []
+    })).toThrow("legend");
+    expect(normalizeSemanticText("\uFEFFclass Widget\r\n{}\r\n"))
+      .toBe("class Widget\n{}\n");
   });
 
   it.each([undefined, "2"])("rejects a runtime index with an invalid graph flag (%s)", (flag) => {

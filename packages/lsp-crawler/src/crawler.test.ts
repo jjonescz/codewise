@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { CodeIndex, type SqlDatabase, type SqlRow, type SqlValue } from "@codewise/index-core";
+import { createHash } from "node:crypto";
 import {
   LspProcessClient,
   LspRequestTimeoutError
@@ -12,6 +13,87 @@ import type { CrawlerConfig } from "./config.js";
 import { CrawlError, crawlWorkspace } from "./crawler.js";
 
 describe("crawlWorkspace", () => {
+  it.each(["--utf-8", "--utf-32", "--range-tokens"])(
+    "captures UTF-16 highlighting from upstream %s tokens",
+    async (flag) => {
+      const directory = await mkdtemp(join(tmpdir(), "codewise-token-encoding-"));
+      const path = join(directory, "index.db");
+      const content = "\uFEFF\uD83D\uDE00value\r\n";
+      try {
+        await writeFile(join(directory, "sample.toy"), content);
+        const summary = await crawlWorkspace({
+          workspaceRoot: directory,
+          server: {
+            command: process.execPath,
+            args: [
+              resolve(import.meta.dirname, "../test/fake-lsp-server.mjs"),
+              join(directory, "server.log"), "--unicode-tokens", flag
+            ],
+            cwd: directory, environment: {}, requestResponses: {}
+          },
+          documents: [{ languageId: "toy", extensions: [".toy"] }],
+          concurrency: 1, requestTimeoutMilliseconds: 5_000,
+          workspaceLoadTimeoutMilliseconds: 5_000, settleMilliseconds: 0,
+          lexicalFallback: false
+        }, path);
+        expect(summary.requestFailures).toBe(0);
+        const index = openIndex(path);
+        try {
+          expect(index.semanticTokens("sample.toy")).toEqual({
+            contentHash: createHash("sha256").update("\uD83D\uDE00value\n").digest("hex"),
+            data: [0, 2, 5, 0, 1]
+          });
+        } finally {
+          index.close();
+        }
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each(["--no-semantic-tokens", "--invalid-tokens"])(
+    "handles missing or invalid token providers explicitly (%s)",
+    async (flag) => {
+      const directory = await mkdtemp(join(tmpdir(), "codewise-token-failure-"));
+      const path = join(directory, "index.db");
+      try {
+        await writeFile(join(directory, "sample.toy"), "let value = 1;\nprint(value);\n");
+        const crawl = crawlWorkspace({
+          workspaceRoot: directory,
+          server: {
+            command: process.execPath,
+            args: [
+              resolve(import.meta.dirname, "../test/fake-lsp-server.mjs"),
+              join(directory, "server.log"), flag
+            ],
+            cwd: directory, environment: {}, requestResponses: {}
+          },
+          documents: [{ languageId: "toy", extensions: [".toy"] }],
+          concurrency: 1, requestTimeoutMilliseconds: 5_000,
+          workspaceLoadTimeoutMilliseconds: 5_000, settleMilliseconds: 0,
+          lexicalFallback: false
+        }, path);
+        if (flag === "--invalid-tokens") {
+          await expect(crawl).rejects.toBeInstanceOf(CrawlError);
+          await expect(crawl).rejects.toMatchObject({
+            summary: { requestFailures: 1 }
+          });
+        } else {
+          expect((await crawl).requestFailures).toBe(0);
+        }
+        const index = openIndex(path);
+        try {
+          expect(index.semanticTokensLegend).toBeUndefined();
+        } finally {
+          index.close();
+        }
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("indexes local references and resumes completed probes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-crawler-"));
     try {
@@ -30,7 +112,8 @@ describe("crawlWorkspace", () => {
               import.meta.dirname,
               "../test/fake-lsp-server.mjs"
             ),
-            logPath
+            logPath,
+            "--highlighting"
           ],
           cwd: directory,
           environment: {},
@@ -73,6 +156,14 @@ describe("crawlWorkspace", () => {
       expect(messages.at(-1))
         .toBe("[crawler] [info] Crawl completed successfully.");
       const index = openIndex(databasePath);
+      expect(index.semanticTokensLegend).toEqual({
+        tokenTypes: ["variable", "function", "keyword", "number"],
+        tokenModifiers: ["declaration"]
+      });
+      expect(index.semanticTokens("sample.toy")).toEqual({
+        contentHash: createHash("sha256").update("let value = 1;\nprint(value);\n").digest("hex"),
+        data: [0, 0, 3, 2, 0, 0, 4, 5, 0, 1, 0, 8, 1, 3, 0, 1, 0, 5, 1, 0, 0, 6, 5, 0, 0]
+      });
       expect(index.references(
         "sample.toy",
         { line: 1, character: 7 },
@@ -88,6 +179,7 @@ describe("crawlWorkspace", () => {
       index.close();
 
       const firstCounts = await methodCounts(logPath);
+      expect(firstCounts.get("textDocument/semanticTokens/full")).toBe(1);
       expect(firstCounts.get("textDocument/documentHighlight") ?? 0).toBe(0);
       await crawlWorkspace(config, databasePath);
       const secondCounts = await methodCounts(logPath);
@@ -272,6 +364,11 @@ describe("crawlWorkspace", () => {
       expect((await methodCounts(join(directory, "server.log")))
         .get("textDocument/hover") ?? 0).toBe(0);
       const index = openIndex(graphDatabasePath);
+      expect(index.semanticTokens("sample.toy")?.data)
+        .toEqual([0, 4, 5, 0, 1, 1, 0, 5, 1, 0, 0, 6, 5, 0, 0]);
+      expect(graphSummary.requestStatistics.find(
+        (request) => request.method === "textDocument/semanticTokens/full"
+      )?.requestCount).toBe(1);
       expect(index.references(
         "sample.toy",
         { line: 1, character: 7 },

@@ -5,6 +5,18 @@ export const indexSchemaVersion = 1;
 export const symbolGraphSchemaVersion = 2;
 export const runtimeIndexSchemaVersion = 3;
 
+export const createSemanticTokensSchemaSql = `
+  CREATE TABLE IF NOT EXISTS document_semantic_tokens (
+    document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+    content_hash TEXT NOT NULL,
+    data BLOB NOT NULL CHECK (length(data) % 20 = 0)
+  ) STRICT;
+
+  INSERT INTO metadata (key, value)
+  VALUES ('semantic_tokens_version', '1')
+  ON CONFLICT (key) DO NOTHING;
+`;
+
 export const createIndexSchemaSql = `
   PRAGMA application_id = ${indexApplicationId};
 
@@ -278,6 +290,15 @@ export function validateIndexDatabase(
     : new Set(baseTables);
   if (isRuntimeIndex) {
     expectedTables.delete("answer_sets");
+  }
+  const semanticVersion = database.all(
+    "SELECT value FROM metadata WHERE key = 'semantic_tokens_version'"
+  )[0]?.["value"];
+  if (semanticVersion !== undefined) {
+    if (semanticVersion !== "1") {
+      throw new CodeIndexValidationError("Unsupported semantic token format version.");
+    }
+    expectedTables.add("document_semantic_tokens");
   }
   const expectedIndexes = hasSymbolGraph
     ? new Set(["occurrences_by_position", "occurrence_symbols_by_symbol"])

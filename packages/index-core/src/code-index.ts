@@ -3,6 +3,12 @@ import {
   runtimeIndexSchemaVersion,
   validateIndexDatabase
 } from "./schema.js";
+import {
+  decodeSemanticTokens,
+  readSemanticTokensLegend,
+  type IndexSemanticTokens,
+  type IndexSemanticTokensLegend
+} from "./semantic-tokens.js";
 import type {
   IndexHover,
   IndexLocation,
@@ -17,10 +23,12 @@ export class CodeIndex {
   readonly #database: SqlDatabase;
   readonly #hasSymbolGraph: boolean;
   readonly #isRuntimeIndex: boolean;
+  public readonly semanticTokensLegend: IndexSemanticTokensLegend | undefined;
 
   public constructor(database: SqlDatabase) {
     this.#database = database;
     this.#isRuntimeIndex = validateIndexDatabase(database) === runtimeIndexSchemaVersion;
+    this.semanticTokensLegend = readSemanticTokensLegend(database);
     this.#hasSymbolGraph = database.all(`
       SELECT 1
       FROM sqlite_schema
@@ -149,6 +157,30 @@ export class CodeIndex {
 
   public close(): void {
     this.#database.close();
+  }
+
+  public semanticTokens(relativePath: string): IndexSemanticTokens | undefined {
+    if (this.semanticTokensLegend === undefined) {
+      return undefined;
+    }
+    const row = this.#database.all(`
+      SELECT token.content_hash, token.data
+      FROM document_semantic_tokens AS token
+      JOIN documents AS document ON document.id = token.document_id
+      WHERE document.relative_path = ?
+    `, [normalizeRelativePath(relativePath)])[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    const contentHash = requiredString(row, "content_hash");
+    const bytes = row["data"];
+    if (!/^[a-f0-9]{64}$/u.test(contentHash) || !(bytes instanceof Uint8Array)) {
+      throw new CodeIndexValidationError("Invalid document semantic token payload.");
+    }
+    return {
+      contentHash,
+      data: decodeSemanticTokens(bytes, this.semanticTokensLegend)
+    };
   }
 
   #symbolDefinitions(

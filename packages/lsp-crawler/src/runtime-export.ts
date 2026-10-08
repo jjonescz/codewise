@@ -13,6 +13,8 @@ import { pathToFileURL } from "node:url";
 import {
   createRuntimeIndexSchemaSql,
   createRuntimeSymbolGraphSchemaSql,
+  createSemanticTokensSchemaSql,
+  readSemanticTokensLegend,
   runtimeIndexSchemaVersion,
   symbolGraphSchemaVersion,
   validateIndexDatabase
@@ -44,6 +46,7 @@ export function exportRuntimeIndex(
 
   const reader = new DatabaseSync(source, { readOnly: true });
   let hasSymbolGraph: boolean;
+  let hasSemanticTokens: boolean;
   try {
     reader.exec("PRAGMA trusted_schema = OFF");
     const version = validateIndexDatabase(new NodeSqlDatabase(reader, false));
@@ -51,6 +54,7 @@ export function exportRuntimeIndex(
       throw new Error("The source is already a compact runtime index.");
     }
     hasSymbolGraph = version === symbolGraphSchemaVersion;
+    hasSemanticTokens = readSemanticTokensLegend(new NodeSqlDatabase(reader, false)) !== undefined;
   } finally {
     reader.close();
   }
@@ -91,6 +95,7 @@ export function exportRuntimeIndex(
     database.exec(`
       ${createRuntimeIndexSchemaSql}
       ${hasSymbolGraph ? createRuntimeSymbolGraphSchemaSql : ""}
+      ${hasSemanticTokens ? createSemanticTokensSchemaSql : ""}
 
       INSERT INTO metadata (key, value)
       VALUES ('symbol_graph', '${hasSymbolGraph ? "1" : "0"}');
@@ -144,6 +149,15 @@ export function exportRuntimeIndex(
       FROM crawl.hover_results WHERE status = 'complete'
       ORDER BY occurrence_id;
     `);
+    if (hasSemanticTokens) {
+      database.exec(`
+        INSERT INTO metadata (key, value)
+        SELECT key, value FROM crawl.metadata WHERE key = 'semantic_tokens_legend';
+        INSERT INTO document_semantic_tokens (document_id, content_hash, data)
+        SELECT document_id, content_hash, data FROM crawl.document_semantic_tokens
+        ORDER BY document_id;
+      `);
+    }
     if (hasSymbolGraph) {
       database.exec(`
         INSERT INTO symbols (id, display_name)

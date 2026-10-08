@@ -1,6 +1,6 @@
 # Codewise VS Code extension
 
-This extension enables C# definition, references, and hover from a prebuilt
+This extension enables C# definition, references, hover, and semantic highlighting from a prebuilt
 Codewise SQLite index in desktop VS Code, vscode.dev, and github.dev. Desktop VS
 Code launches the bundled language server over stdio. VS Code for the Web loads
 the same database through SQLite WASM in a Web Worker.
@@ -20,8 +20,16 @@ and caches the index by commit in extension global storage.
 
 New hosted artifacts contain a compact read-only runtime database. It shares
 file paths and excludes crawler-only identity and retry data while preserving
-navigation and hover answers. The extension also accepts older crawl-format
+navigation, hover, and captured semantic tokens. The extension also accepts older crawl-format
 artifacts and local indexes. A compact export cannot be used to resume indexing.
+
+Semantic highlighting uses the active theme and
+`editor.semanticHighlighting.enabled`. It requires a newly generated index
+containing semantic tokens; older indexes still provide navigation and hover.
+Tokens are shown only when the open document matches the indexed snapshot,
+ignoring a leading BOM and CRLF/LF differences. Editing the text suppresses
+highlighting until the indexed text is restored. Snapshot mismatches are
+reported in **Output: Codewise**.
 
 Desktop VS Code obtains the Roslyn commit from local Git. On vscode.dev and
 github.dev, the extension first obtains the exact revision from the built-in

@@ -2,7 +2,7 @@
 
 Codewise is an experimental precomputed-code-intelligence language server and
 VS Code extension. A generic Language Server Protocol crawler records
-definition, references, document highlights, and hover answers in SQLite, and
+definition, references, document highlights, semantic highlighting, and hover answers in SQLite, and
 Codewise serves those answers offline over LSP.
 
 ## Packages
@@ -20,7 +20,8 @@ Worker.
 
 ## Prerequisites
 
-- Node.js 22 or newer.
+- A current patch release of Node.js 22 or newer. Older Node 22 builds may lack
+  the SQLite read-only URI support required by compact exports.
 - A .NET SDK compatible with the target checkout.
 - A restored and built Roslyn checkout.
 
@@ -50,6 +51,12 @@ symbols, with an optional lexical fallback. It stores definitions, declarations,
 references, document highlights, hovers, retryable failures, source hashes, and
 resume state. Changing or removing a document invalidates workspace answers
 that may point into it.
+
+The complete semantic token stream is also stored independently of navigation
+occurrences, including keywords and literals. Upstream legends are merged by
+name and their type indexes and modifier bits remapped into one index-wide
+legend. Highlighting coordinates are normalized to UTF-16. Servers are asked
+for single-line, non-overlapping tokens; invalid data fails the crawl.
 
 Language servers can require non-standard server-to-client requests. Fixed
 acknowledgements can be supplied through `server.requestResponses`; the Roslyn
@@ -107,6 +114,8 @@ The symbol graph is authoritative for C# and Visual Basic: no per-occurrence
 reference, definition, highlight, or hover LSP requests are issued for those documents.
 Unresolved occurrences remain unresolved, source definitions come from the
 extension, and symbol display text provides a lightweight plaintext hover.
+Highlighting still uses one standard semantic-token request per supported
+document, without per-token navigation requests.
 Extension activation or dispatch failure fails the crawl instead of silently
 starting the potentially multi-day generic fallback. Razor and other languages
 retain standard LSP crawling until they have authoritative providers of their own.
@@ -202,8 +211,8 @@ written below the workspace's `artifacts\.codewise\` directory. Passing
 ### Compact runtime indexes
 
 The crawler database retains stable provider identities, uniqueness constraints,
-source hashes, and retry state for resumable indexing. Consumers do not need
-these fields. Add `--compact` to either Roslyn indexing command to also write
+source hashes, and retry state for resumable indexing. Most of these fields are
+not needed by consumers. Add `--compact` to either Roslyn indexing command to also write
 `runtime/index.db` and `runtime/manifest.json` beside the crawl outputs. The
 runtime manifest hashes and describes the compact database; the original
 database and manifest are unchanged.
@@ -223,6 +232,10 @@ locations, and stores occurrence starts and span lengths instead of duplicate
 coordinates. It omits provider keys, discovery metadata, error/retry rows and
 ingestion-only uniqueness indexes. Serving indexes, completed answers, hovers,
 symbol display text, external locations, ordering, and statistics are preserved.
+Indexes with semantic highlighting also retain a compact little-endian token
+payload and source hash per document, plus a shared legend. This optional,
+versioned format extension is supported on crawl and runtime schemas;
+indexes without it remain navigation-only.
 Runtime exports cannot be resumed as crawler databases. Desktop and web servers
 continue to accept original schema versions 1 and 2.
 

@@ -11,6 +11,13 @@ const exitOnInitialize = process.argv.includes("--exit-on-initialize");
 const crossDocumentReferences =
   process.argv.includes("--cross-document-references");
 const hangReferences = process.argv.includes("--hang-references");
+const highlighting = process.argv.includes("--highlighting");
+const unicodeTokens = process.argv.includes("--unicode-tokens");
+const invalidTokens = process.argv.includes("--invalid-tokens");
+const noSemanticTokens = process.argv.includes("--no-semantic-tokens");
+const rangeTokens = process.argv.includes("--range-tokens");
+const encoding = process.argv.includes("--utf-8") ? "utf-8"
+  : process.argv.includes("--utf-32") ? "utf-32" : "utf-16";
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
   readMessages();
@@ -67,7 +74,7 @@ function handleMessage(message) {
       }
       respond(message.id, {
         capabilities: {
-          positionEncoding: "utf-16",
+          positionEncoding: encoding,
           textDocumentSync: 1,
           declarationProvider: true,
           definitionProvider: true,
@@ -75,14 +82,14 @@ function handleMessage(message) {
           documentHighlightProvider: true,
           documentSymbolProvider: true,
           hoverProvider: true,
-          semanticTokensProvider: {
+          ...(noSemanticTokens ? {} : { semanticTokensProvider: {
             legend: {
-              tokenTypes: ["variable", "function"],
+              tokenTypes: ["variable", "function", "keyword", "number"],
               tokenModifiers: ["declaration"]
             },
-            full: true,
-            range: false
-          }
+            full: !rangeTokens,
+            range: rangeTokens
+          } })
         },
         serverInfo: { name: "fake-lsp", version: "1.0.0" }
       });
@@ -91,8 +98,13 @@ function handleMessage(message) {
       respond(message.id, null);
       break;
     case "textDocument/semanticTokens/full":
+    case "textDocument/semanticTokens/range":
       respond(message.id, {
-        data: [0, 4, 5, 0, 1, 1, 0, 5, 1, 0, 0, 6, 5, 0, 0]
+        data: invalidTokens ? [0, 0, 5, 99, 0]
+          : unicodeTokens ? [0, encoding === "utf-8" ? 4 : encoding === "utf-32" ? 1 : 2, 5, 0, 1]
+          : highlighting
+            ? [0, 0, 3, 2, 0, 0, 4, 5, 0, 1, 0, 8, 1, 3, 0, 1, 0, 5, 1, 0, 0, 6, 5, 0, 0]
+            : [0, 4, 5, 0, 1, 1, 0, 5, 1, 0, 0, 6, 5, 0, 0]
       });
       break;
     case "textDocument/documentSymbol":

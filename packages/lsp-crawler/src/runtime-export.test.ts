@@ -21,6 +21,33 @@ const vbUri = "file:///crawler/src/Helper.vb";
 const externalUri = "metadata:///External.Library/Widget";
 
 describe("exportRuntimeIndex", () => {
+  it.each([false, true])("preserves document token payloads, hashes and legends (graph=%s)", async (graph) => {
+    await withFixture(graph, ({ source, output }) => {
+      const writer = new CrawlerDatabase(source);
+      try {
+        writer.saveSemanticTokens(1, "a".repeat(64), [0, 13, 6, 0, 1, 3, 8, 6, 0, 0], {
+          tokenTypes: ["class"], tokenModifiers: ["declaration"]
+        });
+      } finally {
+        writer.close();
+      }
+      exportRuntimeIndex(source, output);
+      const original = openIndex(source);
+      const compact = openIndex(output);
+      try {
+        expect(compact.semanticTokensLegend).toEqual(original.semanticTokensLegend);
+        expect(compact.semanticTokens("src/Widget.cs"))
+          .toEqual(original.semanticTokens("src/Widget.cs"));
+        expect(compact.semanticTokens("src/Widget.cs")?.data)
+          .toEqual([0, 13, 6, 0, 1, 3, 8, 6, 0, 0]);
+        expect(compact.semanticTokens("src/Helper.vb")).toBeUndefined();
+      } finally {
+        original.close();
+        compact.close();
+      }
+    });
+  });
+
   it.each([false, true])(
     "preserves definitions, references, hovers and statistics (graph=%s)",
     async (graph) => {

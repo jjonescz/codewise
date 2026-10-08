@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import {
   createMessageConnection,
   StreamMessageReader,
@@ -10,7 +11,9 @@ import {
   type MessageConnection
 } from "vscode-jsonrpc/node";
 import { afterEach, describe, expect, it } from "vitest";
-import { createIndexSchemaSql } from "@codewise/index-core";
+import {
+  createIndexSchemaSql, createSemanticTokensSchemaSql, encodeSemanticTokens
+} from "@codewise/index-core";
 import { exportRuntimeIndex } from "../../lsp-crawler/src/runtime-export.js";
 
 interface RunningServer {
@@ -23,6 +26,9 @@ const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const serverPath = resolve(repositoryRoot, "packages/index-lsp/dist/node.js");
 const runningServers: RunningServer[] = [];
 const temporaryDirectories: string[] = [];
+const fixtureSource = "public class Widget {}\n\nvoid M() {\n    _ = Widget;\n}";
+const tokenData = [0, 13, 6, 0, 1, 3, 8, 6, 0, 0];
+const tokenLegend = { tokenTypes: ["class"], tokenModifiers: ["declaration"] };
 
 afterEach(async () => {
   for (const server of runningServers.splice(0)) {
@@ -54,6 +60,8 @@ describe("Node index language server", () => {
       hoverProvider: true,
       positionEncoding: "utf-16"
     });
+    expect(initializeResult.capabilities["semanticTokensProvider"]).toBeUndefined();
+    expect(initializeResult.capabilities["textDocumentSync"]).toBe(0);
     server.connection.sendNotification("initialized", {});
 
     const request = {
@@ -83,6 +91,51 @@ describe("Node index language server", () => {
     expect(server.stderr.join("")).toBe("");
   });
 
+  it.each(["crawl", "compact"])("serves tokens only for matching open snapshots (%s)", async (format) => {
+    let indexPath = await createFixtureIndex(true);
+    if (format === "compact") {
+      const output = `${indexPath}.runtime.db`;
+      exportRuntimeIndex(indexPath, output);
+      indexPath = output;
+    }
+    const server = startServer(indexPath);
+    expect(await initialize(server.connection)).toMatchObject({
+      capabilities: {
+        semanticTokensProvider: { legend: tokenLegend, full: true, range: false },
+        textDocumentSync: { openClose: true, change: 1 }
+      }
+    });
+    server.connection.sendNotification("initialized", {});
+    const uri = "file:///workspace/src/Widget.cs";
+    const request = { textDocument: { uri } };
+    expect(await server.connection.sendRequest("textDocument/semanticTokens/full", request)).toBeNull();
+    server.connection.sendNotification("textDocument/didOpen", {
+      textDocument: {
+        uri, languageId: "csharp", version: 1,
+        text: `\uFEFF${fixtureSource.replace(/\n/gu, "\r\n")}`
+      }
+    });
+    expect(await server.connection.sendRequest("textDocument/semanticTokens/full", request))
+      .toEqual({ data: tokenData });
+    server.connection.sendNotification("textDocument/didChange", {
+      textDocument: { uri, version: 2 },
+      contentChanges: [{ text: `\n${fixtureSource}` }]
+    });
+    expect(await server.connection.sendRequest("textDocument/semanticTokens/full", request))
+      .toEqual({ data: [] });
+    server.connection.sendNotification("textDocument/didChange", {
+      textDocument: { uri, version: 3 }, contentChanges: [{ text: fixtureSource }]
+    });
+    expect(await server.connection.sendRequest("textDocument/semanticTokens/full", request))
+      .toEqual({ data: tokenData });
+    expect(await server.connection.sendRequest("textDocument/semanticTokens/full", {
+      textDocument: { uri: "file:///outside/Widget.cs" }
+    })).toBeNull();
+    server.connection.sendNotification("textDocument/didClose", request);
+    expect(await server.connection.sendRequest("textDocument/semanticTokens/full", request)).toBeNull();
+    expect(server.stderr.join("")).toBe("");
+  });
+
   it("rejects initialization when the index is missing", async () => {
     const directory = await mkdtemp(resolve(tmpdir(), "codewise-index-lsp-"));
     temporaryDirectories.push(directory);
@@ -93,7 +146,7 @@ describe("Node index language server", () => {
   });
 });
 
-async function createFixtureIndex(): Promise<string> {
+async function createFixtureIndex(semanticTokens = false): Promise<string> {
   const directory = await mkdtemp(resolve(tmpdir(), "codewise-index-lsp-"));
   temporaryDirectories.push(directory);
   const path = resolve(directory, "index.db");
@@ -140,6 +193,18 @@ async function createFixtureIndex(): Promise<string> {
     kind: "markdown",
     value: "```csharp\nclass Widget\n```"
   }));
+  if (semanticTokens) {
+    database.exec(createSemanticTokensSchemaSql);
+    database.prepare("INSERT INTO metadata (key, value) VALUES ('semantic_tokens_legend', ?)")
+      .run(JSON.stringify(tokenLegend));
+    database.prepare(`
+      INSERT INTO document_semantic_tokens (document_id, content_hash, data)
+      VALUES (1, ?, ?)
+    `).run(
+      createHash("sha256").update(fixtureSource).digest("hex"),
+      encodeSemanticTokens(tokenData, tokenLegend)
+    );
+  }
   database.close();
   return path;
 }

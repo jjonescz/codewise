@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -185,6 +186,7 @@ describe("Roslyn mixed-language symbol graph", () => {
     });
     expect(manifest.requestStatistics.filter(
       (entry) => entry.method.startsWith("textDocument/")
+        && !entry.method.startsWith("textDocument/semanticTokens/")
     )).toEqual([]);
     expect(log).not.toContain("Syntax tree is required");
 
@@ -208,6 +210,38 @@ describe("Roslyn mixed-language symbol graph", () => {
     ]);
     expect(index.hover(vbPath, positionOf(vbPath, "Function Compute", "Compute")))
       .toBeDefined();
+  });
+
+  it("captures C# and VB highlighting with one semantic-token request per document", () => {
+    const requests = manifest.requestStatistics.filter(
+      (entry) => entry.method.startsWith("textDocument/semanticTokens/")
+    );
+    expect(requests.reduce((count, entry) => count + entry.requestCount, 0))
+      .toBe(manifest.statistics.documentCount);
+    for (const request of requests) {
+      expect(["textDocument/semanticTokens/full", "textDocument/semanticTokens/range"])
+        .toContain(request.method);
+      expect(request.failed).toBe(0);
+      expect(request.succeeded).toBe(request.requestCount);
+    }
+    for (const path of [csharpPath, vbPath, callerPath]) {
+      const tokens = index.semanticTokens(path);
+      expect(tokens).toBeDefined();
+      expect(tokens.contentHash).toBe(createHash("sha256").update(files[path]).digest("hex"));
+      expect(tokens.data.length).toBeGreaterThan(0);
+      expect(tokens.data.length % 5).toBe(0);
+    }
+    for (const [path, fragment, token, type] of [
+      [csharpPath, "public sealed class CSharpBox", "CSharpBox", "class"],
+      [csharpPath, "public sealed class CSharpBox", "class", "keyword"],
+      [csharpPath, "static T Echo<T>", "T", "typeParameter"],
+      [csharpPath, "Increment(int amount)", "1", "number"],
+      [vbPath, "Public Class VbApi", "VbApi", "class"],
+      [vbPath, "Dim nextValue", "nextValue", "variable"],
+      [callerPath, "public static class Caller", "Caller", "class"]
+    ]) {
+      expectSemanticToken(index, path, positionOf(path, fragment, token), type);
+    }
   });
 
   it("keeps generic type, method, and value parameters scoped to their owners", () => {
@@ -320,6 +354,27 @@ function locationOf(path, lineFragment, token, occurrence = 0) {
       end: { line: start.line, character: start.character + token.length }
     }
   };
+}
+
+function expectSemanticToken(index, path, position, type) {
+  const tokens = index.semanticTokens(path);
+  const legend = index.semanticTokensLegend;
+  expect(tokens).toBeDefined();
+  expect(legend).toBeDefined();
+  let line = 0;
+  let character = 0;
+  let actualType;
+  for (let offset = 0; offset < tokens.data.length; offset += 5) {
+    const deltaLine = tokens.data[offset];
+    line += deltaLine;
+    character = deltaLine === 0 ? character + tokens.data[offset + 1]
+      : tokens.data[offset + 1];
+    if (line === position.line && character === position.character) {
+      actualType = legend.tokenTypes[tokens.data[offset + 3]];
+      break;
+    }
+  }
+  expect(actualType, `${path}:${position.line}:${position.character}`).toBe(type);
 }
 
 function expectSymbol(index, definition, references) {

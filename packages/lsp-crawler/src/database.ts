@@ -4,13 +4,19 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import {
   createIndexSchemaSql,
+  createSemanticTokensSchemaSql,
   createSymbolGraphSchemaSql,
+  encodeSemanticTokens,
+  parseSemanticTokensLegend,
+  readSemanticTokensLegend,
+  validateSemanticTokens,
   runtimeIndexSchemaVersion,
   validateIndexDatabase,
   type IndexStatistics
 } from "@codewise/index-core";
 import { NodeSqlDatabase } from "./node-sql-database.js";
 import type { Hover, Location, PositionEncoding, Range } from "./lsp-types.js";
+import type { IndexSemanticTokensLegend } from "@codewise/index-core";
 
 export type LocationAnswerKind =
   | "declaration"
@@ -112,6 +118,7 @@ export class CrawlerDatabase {
   readonly #database: DatabaseSync;
   #insertOccurrence: StatementSync | undefined;
   #selectOccurrence: StatementSync | undefined;
+  #semanticLegend: IndexSemanticTokensLegend | undefined;
 
   public constructor(path: string) {
     const absolutePath = resolve(path);
@@ -139,6 +146,7 @@ export class CrawlerDatabase {
         ${createIndexSchemaSql}
       `);
       validateIndexDatabase(new NodeSqlDatabase(this.#database, false));
+      this.#semanticLegend = readSemanticTokensLegend(new NodeSqlDatabase(this.#database, false));
     } catch (error) {
       this.#database.close();
       throw error;
@@ -185,6 +193,9 @@ export class CrawlerDatabase {
     this.#database.exec("BEGIN IMMEDIATE");
     try {
       if (invalidateAnswers) {
+        if (this.#semanticLegend !== undefined) {
+          this.#database.exec("DELETE FROM document_semantic_tokens");
+        }
         this.#database.exec(`
           DELETE FROM occurrence_answers;
           DELETE FROM hover_results;
@@ -232,6 +243,59 @@ export class CrawlerDatabase {
       id: row.id,
       relativePath: normalizeRelativePath(input.relativePath)
     };
+  }
+
+  public saveSemanticTokens(
+    documentId: number,
+    contentHash: string,
+    data: readonly number[],
+    sourceLegend: IndexSemanticTokensLegend
+  ): void {
+    parseSemanticTokensLegend(sourceLegend);
+    validateSemanticTokens(data, sourceLegend);
+    if (!/^[a-f0-9]{64}$/u.test(contentHash)) {
+      throw new Error("Invalid semantic token source hash.");
+    }
+    const legend = parseSemanticTokensLegend({
+      tokenTypes: [...new Set([
+        ...this.#semanticLegend?.tokenTypes ?? [], ...sourceLegend.tokenTypes
+      ])],
+      tokenModifiers: [...new Set([
+        ...this.#semanticLegend?.tokenModifiers ?? [], ...sourceLegend.tokenModifiers
+      ])]
+    });
+    const remapped = [...data];
+    for (let i = 0; i < data.length; i += 5) {
+      const type = sourceLegend.tokenTypes[data[i + 3]!];
+      if (type === undefined) {
+        throw new Error("Invalid semantic token type.");
+      }
+      remapped[i + 3] = legend.tokenTypes.indexOf(type);
+      let modifiers = 0;
+      sourceLegend.tokenModifiers.forEach((name, bit) => {
+        if ((data[i + 4]! & 2 ** bit) !== 0) {
+          modifiers += 2 ** legend.tokenModifiers.indexOf(name);
+        }
+      });
+      remapped[i + 4] = modifiers;
+    }
+    const bytes = encodeSemanticTokens(remapped, legend);
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      this.#database.exec(createSemanticTokensSchemaSql);
+      this.setMetadata("semantic_tokens_legend", JSON.stringify(legend));
+      this.#database.prepare(`
+        INSERT INTO document_semantic_tokens (document_id, content_hash, data)
+        VALUES (?, ?, ?)
+        ON CONFLICT (document_id) DO UPDATE SET
+          content_hash = excluded.content_hash, data = excluded.data
+      `).run(documentId, contentHash, bytes);
+      this.#database.exec("COMMIT");
+      this.#semanticLegend = legend;
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   public upsertOccurrence(input: OccurrenceInput): OccurrenceRecord {

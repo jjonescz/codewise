@@ -821,8 +821,8 @@ function clientCapabilities(): Record<string, unknown> {
           "abstract", "async", "modification", "documentation", "defaultLibrary"
         ],
         formats: ["relative"],
-        overlappingTokenSupport: true,
-        multilineTokenSupport: true
+        overlappingTokenSupport: false,
+        multilineTokenSupport: false
       }
     }
   };

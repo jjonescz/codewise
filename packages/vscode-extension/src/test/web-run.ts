@@ -22,6 +22,7 @@ export async function run(): Promise<void> {
     new vscode.MarkdownString().appendText("class Widget").value
   );
   await checkDocument(workspaceFolder, "WidgetGeneric.cs", "class Widget");
+  console.log("Codewise web tests passed: navigation, semantic tokens, edit suppression and restoration.");
 }
 
 async function checkDocument(
@@ -81,6 +82,40 @@ async function checkDocument(
     hoverText.includes(expectedSignature),
     `${name} hover did not include its signature: ${hoverText}`
   );
+  const legend = await vscode.commands.executeCommand<vscode.SemanticTokensLegend>(
+    "vscode.provideDocumentSemanticTokensLegend", sourceUri
+  );
+  assert(
+    legend?.tokenTypes[0] === "class" && legend.tokenModifiers[0] === "declaration",
+    "The semantic token legend was not registered."
+  );
+  const tokens = await vscode.commands.executeCommand<vscode.SemanticTokens>(
+    "vscode.provideDocumentSemanticTokens", sourceUri
+  );
+  assert(
+    tokens !== undefined
+      && Array.from(tokens.data).join(",") === "0,13,6,0,1,3,8,6,0,0",
+    "The indexed semantic token stream was not returned."
+  );
+  const originalText = document.getText();
+  const edit = new vscode.WorkspaceEdit();
+  edit.insert(sourceUri, new vscode.Position(0, 0), "\n");
+  assert(await vscode.workspace.applyEdit(edit), "Could not edit the test document.");
+  const changedTokens = await vscode.commands.executeCommand<vscode.SemanticTokens>(
+    "vscode.provideDocumentSemanticTokens", sourceUri
+  );
+  assert(changedTokens?.data.length === 0, "Highlighting was not suppressed after editing.");
+  const restore = new vscode.WorkspaceEdit();
+  restore.replace(
+    sourceUri,
+    new vscode.Range(new vscode.Position(0, 0), document.positionAt(document.getText().length)),
+    originalText
+  );
+  assert(await vscode.workspace.applyEdit(restore), "Could not restore the test document.");
+  const restoredTokens = await vscode.commands.executeCommand<vscode.SemanticTokens>(
+    "vscode.provideDocumentSemanticTokens", sourceUri
+  );
+  assert(restoredTokens?.data.length === 10, "Highlighting did not return after restoring the snapshot.");
 }
 
 function assert(condition: boolean, message: string): asserts condition {
