@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-08T13:10:39.684Z",
+  "updatedAt": "2026-10-08T14:22:59.900Z",
   "entries": {
     "67ebca858d83d631030cb1b17d97ae96f7c6a5e8": {
       "candidate": {
@@ -9,10 +9,10 @@
         "sourceRef": "refs/heads/main",
         "sourceLabel": "main"
       },
-      "status": "queued",
       "attempts": 1,
-      "lastAttemptAt": "2026-10-08T13:10:39.684Z",
-      "lastConclusion": "queued"
+      "lastAttemptAt": "2026-10-08T14:22:59.900Z",
+      "lastConclusion": "failure",
+      "status": "failed"
     }
   }
 }
