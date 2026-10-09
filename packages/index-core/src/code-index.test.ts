@@ -202,6 +202,8 @@ describe("CodeIndex", () => {
     })).toThrow("legend");
     expect(normalizeSemanticText("\uFEFFclass Widget\r\n{}\r\n"))
       .toBe("class Widget\n{}\n");
+    expect(normalizeSemanticText("one\rtwo\r\nthree\nfour\u0085five\u2028six\u2029seven"))
+      .toBe("one\ntwo\nthree\nfour\u0085five\u2028six\u2029seven");
   });
 
   it.each([undefined, "2"])("rejects a runtime index with an invalid graph flag (%s)", (flag) => {

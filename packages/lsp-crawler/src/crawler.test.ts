@@ -13,6 +13,67 @@ import type { CrawlerConfig } from "./config.js";
 import { CrawlError, crawlWorkspace } from "./crawler.js";
 
 describe("crawlWorkspace", () => {
+  it.each(
+    [false, true].flatMap((graph) => [false, true].flatMap((unicodeLineBreaks) => (
+      ["utf-8", "utf-16", "utf-32"].map((encoding) => ({
+        graph, unicodeLineBreaks, encoding
+      }))
+    )))
+  )("maps source line breaks to editor UTF-16 (graph=$graph, Unicode=$unicodeLineBreaks, $encoding)", async ({
+    graph, unicodeLineBreaks, encoding
+  }) => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-line-breaks-"));
+    try {
+      const source = "\uFEFF\uD83D\uDE00one\u0085two\u2028three\u2029four\r\nfive\rsix\nseven";
+      await writeFile(join(directory, "sample.toy"), source);
+      const path = join(directory, "index.db");
+      const summary = await crawlWorkspace({
+        workspaceRoot: directory,
+        server: {
+          command: process.execPath,
+          args: [
+            resolve(import.meta.dirname, "../test/fake-lsp-server.mjs"),
+            join(directory, "server.log"), `--${encoding}`, "--range-tokens",
+            unicodeLineBreaks ? "--unicode-newline-tokens" : "--standard-newline-tokens"
+          ],
+          cwd: directory, environment: {}, requestResponses: {}
+        },
+        documents: [{ languageId: "toy", extensions: [".toy"] }],
+        concurrency: 1, requestTimeoutMilliseconds: 5_000,
+        workspaceLoadTimeoutMilliseconds: 5_000, settleMilliseconds: 0,
+        lexicalFallback: !graph,
+        ...(unicodeLineBreaks ? { unicodeLineBreaks: true } : {})
+      }, path, graph ? {
+        symbolGraphProvider: {
+          name: "newline-provider", languageIds: new Set(["toy"]),
+          async populateSymbolGraph(_client, documents, onChunk) {
+            onChunk({
+              symbols: [], processedDocumentUris: documents.map((document) => document.uri),
+              missingDocumentUris: [], failures: []
+            });
+          }
+        }
+      } : {});
+      expect(summary.requestFailures).toBe(0);
+      expect(summary.requestStatistics.find(
+        (entry) => entry.method === "textDocument/semanticTokens/range"
+      )?.requestCount).toBe(1);
+      const index = openIndex(path);
+      try {
+        expect(index.semanticTokens("sample.toy")).toEqual({
+          contentHash: createHash("sha256")
+            .update("\uD83D\uDE00one\u0085two\u2028three\u2029four\nfive\nsix\nseven").digest("hex"),
+          data: [0, 2, 3, 0, 1, 0, 4, 3, 0, 0, 0, 4, 5, 0, 0, 0, 6, 4, 0, 0,
+            1, 0, 4, 0, 0, 1, 0, 3, 0, 0, 1, 0, 5, 0, 0]
+        });
+      } finally {
+        index.close();
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])("captures only closed graph snapshots (source changed=%s)", async (sourceChanged) => {
     const directory = await mkdtemp(join(tmpdir(), "codewise-graph-token-scope-"));
     const path = join(directory, "index.db");

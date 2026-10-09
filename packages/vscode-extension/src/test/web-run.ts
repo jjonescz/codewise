@@ -37,6 +37,11 @@ async function checkDocument(
     "csharp"
   );
   await vscode.window.showTextDocument(document);
+  assert(
+    document.lineCount === 5
+      && document.lineAt(0).text.includes("one\u0085two\u2028three\u2029four"),
+    "Editor coordinates must preserve Unicode separators inside a line and recognize CR line endings."
+  );
   const position = new vscode.Position(3, 10);
 
   const definitions = await vscode.commands.executeCommand<
@@ -95,7 +100,11 @@ async function checkDocument(
   assert(
     tokens !== undefined
       && Array.from(tokens.data).join(",") === "0,13,6,0,1,3,8,6,0,0",
-    "The indexed semantic token stream was not returned."
+    `${name}: expected indexed semantic tokens, received ${tokens === undefined
+      ? "none" : Array.from(tokens.data).join(",")}; `
+      + `Unicode separators preserved: ${document.lineAt(0).text.includes(
+        "one\u0085two\u2028three\u2029four"
+      )}.`
   );
   const originalText = document.getText();
   const edit = new vscode.WorkspaceEdit();

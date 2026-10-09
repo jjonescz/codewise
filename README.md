@@ -57,6 +57,18 @@ occurrences, including keywords and literals. Upstream legends are merged by
 name and their type indexes and modifier bits remapped into one index-wide
 legend. Highlighting coordinates are normalized to UTF-16. Servers are asked
 for single-line, non-overlapping tokens; invalid data fails the crawl.
+For servers such as Roslyn that count NEL (`U+0085`), line separator (`U+2028`),
+and paragraph separator (`U+2029`) as newlines, `unicodeLineBreaks: true` selects
+that upstream coordinate convention. The Roslyn indexer enables it automatically.
+Semantic token positions are mapped back to the editor's CR/LF line convention;
+the Unicode separators remain characters in editor lines. Other crawlers
+default to CR/LF coordinates.
+
+Semantic source hashes ignore a leading BOM and CRLF/CR/LF differences so
+editor line-ending normalization does not suppress valid highlighting.
+If the editor removes unusual Unicode line terminators, that changes the
+snapshot and semantic highlighting is suppressed until the original text is
+restored.
 
 Language servers can require non-standard server-to-client requests. Fixed
 acknowledgements can be supplied through `server.requestResponses`; the Roslyn

@@ -103,6 +103,14 @@ public static class Caller
     public static int RunBox(VbBox<int> box) => box.BoxEcho(item: 3);
 }
 `,
+  "CSharpApi/UnicodeLines.cs": `namespace Mixed;
+
+public sealed class UnicodeLines
+{
+    public const string Text = @"alpha\u0085beta\u2028gamma\u2029delta";
+    public int GetValue() => 1;
+}
+`,
   "Loose/Unloaded.cs": "public class UnloadedCSharp {}\n",
   "Loose/Unloaded.vb": "Public Class UnloadedVisualBasic\nEnd Class\n"
 };
@@ -176,12 +184,12 @@ describe("Roslyn mixed-language symbol graph", () => {
   });
 
   it("indexes VB locals and connects C#/VB definitions and references", () => {
-    expect(manifest.statistics.documentCount).toBe(5);
+    expect(manifest.statistics.documentCount).toBe(6);
     expect(manifest.recoveredRequestFailures).toBe(0);
     expect(manifest.symbolGraph).toMatchObject({
       status: "used",
       metrics: {
-        processedDocumentCount: 3,
+        processedDocumentCount: 4,
         missingDocumentCount: 2,
         failedDocumentCount: 0
       }
@@ -245,6 +253,34 @@ describe("Roslyn mixed-language symbol graph", () => {
       [callerPath, "public static class Caller", "Caller", "class"]
     ]) {
       expectSemanticToken(index, path, positionOf(path, fragment, token), type);
+    }
+  });
+
+  it("maps Roslyn Unicode newlines to editor lines without dropping classifications", () => {
+    const path = "CSharpApi/UnicodeLines.cs";
+    const tokens = index.semanticTokens(path);
+    expect(tokens).toBeDefined();
+    expect(tokens.contentHash).toBe(createHash("sha256").update(files[path]).digest("hex"));
+    expectSemanticToken(index, path, positionOf(path, "class UnicodeLines", "UnicodeLines"), "class");
+    expectSemanticToken(index, path, positionOf(path, "GetValue()", "GetValue"), "method");
+    const lines = files[path].split("\n");
+    let line = 0;
+    let character = 0;
+    const literalTokens = [];
+    for (let offset = 0; offset < tokens.data.length; offset += 5) {
+      const deltaLine = tokens.data[offset];
+      line += deltaLine;
+      character = deltaLine === 0 ? character + tokens.data[offset + 1]
+        : tokens.data[offset + 1];
+      const length = tokens.data[offset + 2];
+      expect(line).toBeLessThan(lines.length);
+      expect(character + length).toBeLessThanOrEqual(lines[line].length);
+      if (line === 4 && character >= lines[4].indexOf('@"')) {
+        literalTokens.push(lines[line].slice(character, character + length));
+      }
+    }
+    for (const part of ["alpha", "beta", "gamma", "delta"]) {
+      expect(literalTokens.some((token) => token.includes(part)), part).toBe(true);
     }
   });
 

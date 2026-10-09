@@ -218,7 +218,8 @@ async function main(): Promise<void> {
     requestTimeoutMilliseconds: 300_000,
     workspaceLoadTimeoutMilliseconds: 15 * 60_000,
     settleMilliseconds: 5_000,
-    lexicalFallback: false
+    lexicalFallback: false,
+    unicodeLineBreaks: true
   };
 
   console.log(`Indexing commit ${workspaceCommit}`);

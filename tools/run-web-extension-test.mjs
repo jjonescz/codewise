@@ -13,7 +13,7 @@ import { encodeSemanticTokens } from "../packages/index-core/dist/index.js";
 import { exportRuntimeIndex } from "../packages/lsp-crawler/dist/index.js";
 
 const fixtureSource = [
-  "public class Widget {}",
+  "public class Widget {} // one\u0085two\u2028three\u2029four",
   "",
   "void M() {",
   "    _ = Widget;",
@@ -44,11 +44,16 @@ await mkdir(resolve(workspacePath, "src"), { recursive: true });
 await mkdir(resolve(workspacePath, ".vscode"), { recursive: true });
 await Promise.all([
   writeFile(resolve(workspacePath, "src", "Widget.cs"), fixtureSource, "utf8"),
-  writeFile(resolve(workspacePath, "src", "WidgetGeneric.cs"), fixtureSource, "utf8"),
+  writeFile(
+    resolve(workspacePath, "src", "WidgetGeneric.cs"),
+    fixtureSource.replace(/\n/gu, "\r"),
+    "utf8"
+  ),
   writeFile(
     resolve(workspacePath, ".vscode", "settings.json"),
     `${JSON.stringify({
-      "codewise.indexPath": "C:\\missing-desktop-index\\index.db"
+      "codewise.indexPath": "C:\\missing-desktop-index\\index.db",
+      "editor.unusualLineTerminators": "off"
     }, undefined, 2)}\n`,
     "utf8"
   )

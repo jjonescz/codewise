@@ -27,9 +27,11 @@ Semantic highlighting uses the active theme and
 `editor.semanticHighlighting.enabled`. It requires a newly generated index
 containing semantic tokens; older indexes still provide navigation and hover.
 Tokens are shown only when the open document matches the indexed snapshot,
-ignoring a leading BOM and CRLF/LF differences. Editing the text suppresses
+ignoring a leading BOM and CRLF/CR/LF differences. Editing the text suppresses
 highlighting until the indexed text is restored. Snapshot mismatches are
 reported in **Output: Codewise**.
+Removing unusual Unicode line terminators also changes the snapshot; keep them
+in the document to retain its precomputed highlighting.
 
 Desktop VS Code obtains the Roslyn commit from local Git. On vscode.dev and
 github.dev, the extension first obtains the exact revision from the built-in

@@ -91,7 +91,11 @@ describe("Node index language server", () => {
     expect(server.stderr.join("")).toBe("");
   });
 
-  it.each(["crawl", "compact"])("serves tokens only for matching open snapshots (%s)", async (format) => {
+  it.each(["crawl", "compact"].flatMap((format) => [
+    { format, lineEnding: "LF", newline: "\n" },
+    { format, lineEnding: "CRLF", newline: "\r\n" },
+    { format, lineEnding: "CR", newline: "\r" }
+  ]))("serves tokens only for matching snapshots ($format, $lineEnding)", async ({ format, newline }) => {
     let indexPath = await createFixtureIndex(true);
     if (format === "compact") {
       const output = `${indexPath}.runtime.db`;
@@ -112,7 +116,7 @@ describe("Node index language server", () => {
     server.connection.sendNotification("textDocument/didOpen", {
       textDocument: {
         uri, languageId: "csharp", version: 1,
-        text: `\uFEFF${fixtureSource.replace(/\n/gu, "\r\n")}`
+        text: `\uFEFF${fixtureSource.replace(/\n/gu, newline)}`
       }
     });
     expect(await server.connection.sendRequest("textDocument/semanticTokens/full", request))

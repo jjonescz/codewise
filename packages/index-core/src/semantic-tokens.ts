@@ -12,7 +12,7 @@ export interface IndexSemanticTokens {
 }
 
 export function normalizeSemanticText(text: string): string {
-  return text.replace(/^\uFEFF/u, "").replace(/\r\n/gu, "\n");
+  return text.replace(/^\uFEFF/u, "").replace(/\r\n?/gu, "\n");
 }
 
 export function parseSemanticTokensLegend(value: unknown): IndexSemanticTokensLegend {

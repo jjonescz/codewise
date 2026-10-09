@@ -25,6 +25,7 @@ export interface CrawlerConfig {
   readonly workspaceLoadTimeoutMilliseconds: number;
   readonly settleMilliseconds: number;
   readonly lexicalFallback: boolean;
+  readonly unicodeLineBreaks?: boolean;
 }
 
 export async function loadCrawlerConfig(path: string): Promise<CrawlerConfig> {
@@ -65,6 +66,7 @@ export async function loadCrawlerConfig(path: string): Promise<CrawlerConfig> {
     };
   });
   const cwd = optionalString(serverValue, "cwd");
+  const unicodeLineBreaks = optionalBoolean(value, "unicodeLineBreaks");
 
   return {
     workspaceRoot,
@@ -83,6 +85,7 @@ export async function loadCrawlerConfig(path: string): Promise<CrawlerConfig> {
       optionalInteger(value, "workspaceLoadTimeoutMilliseconds", 1) ?? 300_000,
     settleMilliseconds: optionalInteger(value, "settleMilliseconds", 0) ?? 2_000,
     lexicalFallback: optionalBoolean(value, "lexicalFallback") ?? false,
+    ...(unicodeLineBreaks === undefined ? {} : { unicodeLineBreaks }),
     ...("initializationOptions" in value
       ? { initializationOptions: value["initializationOptions"] }
       : {})

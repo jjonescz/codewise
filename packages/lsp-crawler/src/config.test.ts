@@ -27,6 +27,26 @@ describe("loadCrawlerConfig", () => {
       expect(config.concurrency).toBe(4);
       expect(config.workspaceLoadTimeoutMilliseconds).toBe(300_000);
       expect(config.lexicalFallback).toBe(false);
+      expect(config.unicodeLineBreaks).toBeUndefined();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([true, false, "unicode"])("validates upstream Unicode line-break configuration (%s)", async (value) => {
+    const directory = await mkdtemp(join(tmpdir(), "codewise-lsp-config-"));
+    try {
+      const path = join(directory, "crawler.json");
+      await writeFile(path, JSON.stringify({
+        workspaceRoot: "workspace", server: { command: "language-server" },
+        documents: [{ languageId: "csharp", extensions: [".cs"] }],
+        unicodeLineBreaks: value
+      }));
+      if (typeof value === "boolean") {
+        expect((await loadCrawlerConfig(path)).unicodeLineBreaks).toBe(value);
+      } else {
+        await expect(loadCrawlerConfig(path)).rejects.toThrow("unicodeLineBreaks must be a boolean");
+      }
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

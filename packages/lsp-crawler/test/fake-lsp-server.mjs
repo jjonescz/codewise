@@ -17,6 +17,8 @@ const invalidTokens = process.argv.includes("--invalid-tokens");
 const noSemanticTokens = process.argv.includes("--no-semantic-tokens");
 const rangeTokens = process.argv.includes("--range-tokens");
 const graphTokenScope = process.argv.includes("--graph-token-scope");
+const unicodeNewlineTokens = process.argv.includes("--unicode-newline-tokens");
+const standardNewlineTokens = process.argv.includes("--standard-newline-tokens");
 const encoding = process.argv.includes("--utf-8") ? "utf-8"
   : process.argv.includes("--utf-32") ? "utf-32" : "utf-16";
 process.stdin.on("data", (chunk) => {
@@ -100,6 +102,20 @@ function handleMessage(message) {
       break;
     case "textDocument/semanticTokens/full":
     case "textDocument/semanticTokens/range":
+      if (
+        (unicodeNewlineTokens || standardNewlineTokens)
+        && message.method.endsWith("/range")
+        && (
+          message.params.range.end.line !== (unicodeNewlineTokens ? 6 : 3)
+          || message.params.range.end.character !== 5
+        )
+      ) {
+        write({
+          jsonrpc: "2.0", id: message.id,
+          error: { code: -32000, message: "Wrong source-coordinate range end." }
+        });
+        break;
+      }
       if (graphTokenScope && message.params.textDocument.uri.endsWith("/unloaded.toy")) {
         write({
           jsonrpc: "2.0", id: message.id,
@@ -108,7 +124,9 @@ function handleMessage(message) {
         break;
       }
       respond(message.id, {
-        data: graphTokenScope && message.params.textDocument.uri.endsWith("/keywords.toy")
+        data: unicodeNewlineTokens || standardNewlineTokens
+          ? newlineTokenData()
+          : graphTokenScope && message.params.textDocument.uri.endsWith("/keywords.toy")
           ? [0, 0, 3, 2, 0]
           : invalidTokens ? [0, 0, 5, 99, 0]
           : unicodeTokens ? [0, encoding === "utf-8" ? 4 : encoding === "utf-32" ? 1 : 2, 5, 0, 1]
@@ -151,6 +169,17 @@ function handleMessage(message) {
         error: { code: -32601, message: `Unknown method ${message.method}` }
       });
   }
+}
+
+function newlineTokenData() {
+  const prefix = encoding === "utf-8" ? 4 : encoding === "utf-32" ? 1 : 2;
+  return unicodeNewlineTokens
+    ? [0, prefix, 3, 0, 1, 1, 0, 3, 0, 0, 1, 0, 5, 0, 0, 1, 0, 4, 0, 0,
+       1, 0, 4, 0, 0, 1, 0, 3, 0, 0, 1, 0, 5, 0, 0]
+    : [0, prefix, 3, 0, 1, 0, encoding === "utf-8" ? 5 : 4, 3, 0, 0,
+       0, encoding === "utf-8" ? 6 : 4, 5, 0, 0,
+       0, encoding === "utf-8" ? 8 : 6, 4, 0, 0,
+       1, 0, 4, 0, 0, 1, 0, 3, 0, 0, 1, 0, 5, 0, 0];
 }
 
 function locationsFor(params) {

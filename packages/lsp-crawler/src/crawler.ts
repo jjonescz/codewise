@@ -412,7 +412,7 @@ export async function crawlWorkspace(
               && population?.processedDocumentUris.has(documentWork.prepared.uri)
             ) {
               await captureProviderSemanticTokens(
-                client, database, documentWork.prepared, failures, counters, onLog
+                client, database, config, documentWork.prepared, failures, counters, onLog
               );
             }
           } catch (error) {
@@ -706,7 +706,9 @@ async function discoverDocumentCandidates(
   const source = await readFile(document.absolutePath, "utf8");
   const content = normalizeSemanticText(source);
   const uri = pathToFileURL(document.absolutePath).href;
-  const mapper = new TextCoordinateMapper(content, client.positionEncoding);
+  const mapper = new TextCoordinateMapper(
+    content, client.positionEncoding, config.unicodeLineBreaks
+  );
   const record = database.upsertDocument({
     uri,
     relativePath: document.relativePath,
@@ -804,6 +806,7 @@ async function probeDocument(
 async function captureProviderSemanticTokens(
   client: LspProcessClient,
   database: CrawlerDatabase,
+  config: CrawlerConfig,
   prepared: PreparedDocument,
   failures: Error[],
   counters: CrawlCounters,
@@ -817,7 +820,7 @@ async function captureProviderSemanticTokens(
   await captureSemanticTokenCandidates(
     client, database, prepared.recordId, prepared.uri,
     prepared.document.languageId, content,
-    new TextCoordinateMapper(content, client.positionEncoding),
+    new TextCoordinateMapper(content, client.positionEncoding, config.unicodeLineBreaks),
     failures, counters, onLog, false
   );
 }
@@ -987,15 +990,18 @@ async function semanticTokenCandidates(
     character = deltaLine === 0 ? character + deltaCharacter : deltaCharacter;
     const start = mapper.toUtf16Position({ line, character });
     const end = mapper.toUtf16Position({ line, character: character + length });
-    if (line === previousLine && start.character < previousEnd) {
+    if (end.line !== start.line) {
+      throw new Error("Language server returned a semantic token spanning multiple editor lines.");
+    }
+    if (start.line === previousLine && start.character < previousEnd) {
       throw new Error("Language server returned overlapping semantic tokens.");
     }
     highlighting.push(
-      line - previousLine,
-      line === previousLine ? start.character - previousCharacter : start.character,
+      start.line - previousLine,
+      start.line === previousLine ? start.character - previousCharacter : start.character,
       end.character - start.character, tokenType, modifiers
     );
-    previousLine = line;
+    previousLine = start.line;
     previousCharacter = start.character;
     previousEnd = end.character;
     const semanticTokenType = legend.tokenTypes[tokenType]!;
@@ -1381,17 +1387,44 @@ class TextCoordinateMapper {
   readonly #content: string;
   readonly #encoding: PositionEncoding;
   readonly #lineStarts: readonly number[];
+  readonly #lineEnds: readonly number[];
+  readonly #editorLineStarts: readonly number[];
 
-  public constructor(content: string, encoding: PositionEncoding) {
+  public constructor(
+    content: string,
+    encoding: PositionEncoding,
+    unicodeLineBreaks = false
+  ) {
     this.#content = content;
     this.#encoding = encoding;
     const lineStarts = [0];
+    const lineEnds: number[] = [];
+    // Roslyn treats Unicode separators as lines; editors keep them within a line.
+    const editorLineStarts = [0];
     for (let index = 0; index < content.length; index++) {
-      if (content.charCodeAt(index) === 10) {
-        lineStarts.push(index + 1);
+      const character = content.charCodeAt(index);
+      const editorLineBreak = character === 10 || character === 13;
+      if (
+        editorLineBreak
+        || (unicodeLineBreaks && (
+          character === 0x85 || character === 0x2028 || character === 0x2029
+        ))
+      ) {
+        lineEnds.push(index);
+        if (character === 13 && content.charCodeAt(index + 1) === 10) {
+          index++;
+        }
+        const nextStart = index + 1;
+        lineStarts.push(nextStart);
+        if (editorLineBreak) {
+          editorLineStarts.push(nextStart);
+        }
       }
     }
+    lineEnds.push(content.length);
     this.#lineStarts = lineStarts;
+    this.#lineEnds = lineEnds;
+    this.#editorLineStarts = editorLineStarts;
   }
 
   public get end(): Position {
@@ -1403,50 +1436,61 @@ class TextCoordinateMapper {
     if (lineStart === undefined) {
       throw new Error("Semantic token line is outside the document.");
     }
-    const line = this.#content.slice(
-      lineStart, this.#lineStarts[position.line + 1] ?? this.#content.length
-    ).replace(/\r?\n$/u, "");
+    const lineEnd = this.#lineEnds[position.line]!;
     if (this.#encoding === "utf-16") {
-      if (position.character > line.length) {
-        throw new Error("Semantic token character is outside its line.");
+      if (position.character > lineEnd - lineStart) {
+        throw new Error(
+          `Semantic token character is outside its line: `
+          + `${position.line}:${position.character}, line length ${lineEnd - lineStart}.`
+        );
       }
-      return position;
+      return this.#editorPositionAtOffset(lineStart + position.character);
     }
     let encoded = 0;
     let utf16 = 0;
-    for (const character of line) {
+    for (const character of this.#content.slice(lineStart, lineEnd)) {
       if (encoded === position.character) {
-        return { line: position.line, character: utf16 };
+        return this.#editorPositionAtOffset(lineStart + utf16);
       }
       encoded += this.#encoding === "utf-8" ? Buffer.byteLength(character) : 1;
       utf16 += character.length;
     }
     if (encoded === position.character) {
-      return { line: position.line, character: utf16 };
+      return this.#editorPositionAtOffset(lineStart + utf16);
     }
     throw new Error("Semantic token character is outside a character boundary.");
   }
 
   public positionAtUtf16Offset(offset: number): Position {
-    let low = 0;
-    let high = this.#lineStarts.length;
-    while (low + 1 < high) {
-      const middle = Math.floor((low + high) / 2);
-      if (this.#lineStarts[middle]! <= offset) {
-        low = middle;
-      } else {
-        high = middle;
-      }
-    }
-    const prefix = this.#content.slice(this.#lineStarts[low]!, offset);
+    const line = this.#lineAtOffset(offset, this.#lineStarts);
+    const prefix = this.#content.slice(this.#lineStarts[line]!, offset);
     return {
-      line: low,
+      line,
       character: this.#encoding === "utf-8"
         ? Buffer.byteLength(prefix, "utf8")
         : this.#encoding === "utf-32"
           ? [...prefix].length
           : prefix.length
     };
+  }
+
+  #editorPositionAtOffset(offset: number): Position {
+    const line = this.#lineAtOffset(offset, this.#editorLineStarts);
+    return { line, character: offset - this.#editorLineStarts[line]! };
+  }
+
+  #lineAtOffset(offset: number, lineStarts: readonly number[]): number {
+    let low = 0;
+    let high = lineStarts.length;
+    while (low + 1 < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (lineStarts[middle]! <= offset) {
+        low = middle;
+      } else {
+        high = middle;
+      }
+    }
+    return low;
   }
 }
 
