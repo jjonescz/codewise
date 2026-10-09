@@ -1,31 +1,18 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-08T16:34:22.566Z",
+  "updatedAt": "2026-10-09T12:47:36.510Z",
   "entries": {
-    "67ebca858d83d631030cb1b17d97ae96f7c6a5e8": {
+    "13cf6d76c50ab2be2f21c765bba1df2ad4851634": {
       "candidate": {
-        "sha": "67ebca858d83d631030cb1b17d97ae96f7c6a5e8",
+        "sha": "13cf6d76c50ab2be2f21c765bba1df2ad4851634",
         "sourceKind": "main",
         "sourceRef": "refs/heads/main",
         "sourceLabel": "main"
       },
-      "attempts": 2,
-      "lastAttemptAt": "2026-10-08T16:34:22.566Z",
-      "lastConclusion": "failure",
-      "status": "failed"
-    },
-    "199c1e4c05d0c0b0b5afb1d03bc1ebae881f81ff": {
-      "candidate": {
-        "sha": "199c1e4c05d0c0b0b5afb1d03bc1ebae881f81ff",
-        "sourceKind": "pull-request",
-        "sourceRef": "refs/pull/85962/head",
-        "sourceLabel": "PR #85962",
-        "pullRequestNumber": 85962
-      },
-      "status": "failed",
+      "status": "queued",
       "attempts": 1,
-      "lastAttemptAt": "2026-10-08T16:03:11.808Z",
-      "lastConclusion": "failure"
+      "lastAttemptAt": "2026-10-09T12:47:36.510Z",
+      "lastConclusion": "queued"
     }
   }
 }
