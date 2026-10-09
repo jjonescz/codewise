@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-09T12:47:36.510Z",
+  "updatedAt": "2026-10-09T13:35:53.365Z",
   "entries": {
     "13cf6d76c50ab2be2f21c765bba1df2ad4851634": {
       "candidate": {
@@ -9,10 +9,11 @@
         "sourceRef": "refs/heads/main",
         "sourceLabel": "main"
       },
-      "status": "queued",
       "attempts": 1,
-      "lastAttemptAt": "2026-10-09T12:47:36.510Z",
-      "lastConclusion": "queued"
+      "lastAttemptAt": "2026-10-09T13:35:53.365Z",
+      "lastConclusion": "success",
+      "status": "success",
+      "artifactExpiresAt": "2027-01-07T13:35:53.365Z"
     }
   }
 }
